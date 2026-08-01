@@ -1,0 +1,90 @@
+# qqbot 配置文件示例
+# 复制为 config.yaml 并按需修改
+
+bot:
+  name: "群管小助手"        # 机器人显示名（用于欢迎语占位 {bot_name}）
+  owner: 10001             # 超级管理员 QQ（跳过所有检查，可执行全部指令）
+  command_prefix: "/"      # owner 私聊指令前缀
+  timezone: "Asia/Shanghai" # 日志/统计用时区（可留空）
+
+onebot:
+  ws_url: "ws://127.0.0.1:3001"  # NapCat 正向 WebSocket 监听地址
+  access_token: ""               # 与 NapCat 配置的 AccessToken 一致（可留空）
+  api_timeout_ms: 5000           # API 调用超时（毫秒）
+
+# ⚠ 旧版邮件登录通知已停用（阶段 5）：私聊指令与 SMTP/IMAP 不再生效。
+# 以下字段仅供一次性迁移读取（仅 webui_url / webui_token 会迁移到网页后台的
+# NapCat 配置），其他字段（smtp/imap/to/...）会被忽略。
+# 全新部署不需要此块；旧部署迁移请设置 QQBOT_IMPORT_CONFIG 指向本文件。
+login_notify:
+  webui_url: "http://127.0.0.1:6099"  # NapCat WebUI 地址；Docker 部署填 http://napcat:6099
+  webui_token: "napcat"               # NapCat WebUI 密码/token（docker logs napcat 中查看）
+
+# 多群配置：按 group_id 分别配置功能
+groups:
+  - group_id: 123456789
+    enabled: true
+    # 白名单：这些 QQ 在本群豁免所有检查（含关键词/刷屏）
+    whitelist: [10002, 10003]
+
+    # 新人入群欢迎
+    welcome:
+      enabled: true
+      message: "欢迎新成员 {nickname} 加入本群！请阅读群公告，友善交流~"
+
+    # 关键词过滤
+    keyword_filter:
+      enabled: true
+      warn_limit: 3            # warn 累计 3 次自动升级为禁言 30 分钟（0=不升级）
+      mute_limit: 3            # mute 累计 3 次自动升级为移出（0=不升级）
+      strike_ttl_hours: 24     # 违规计分有效期（小时）
+      rules:
+        - pattern: "加我领取"
+          action: mute
+          mute_minutes: 30
+        - pattern: "\\d{9,}"       # 正则：长串数字（疑似广告联系方式）
+          regex: true
+          action: mute
+          mute_minutes: 60
+        - pattern: "出售.*卡密"
+          regex: true
+          action: kick
+        - pattern: "本群已被举报"
+          action: warn
+
+    # 刷屏检测
+    flood:
+      enabled: true
+      window_seconds: 10       # 统计窗口（秒）
+      max_messages: 8          # 窗口内超过该条数判定为刷屏
+      mute_minutes: 10         # 刷屏禁言时长
+      kick_on_repeat: true     # 多次刷屏升级为移出
+      kick_threshold: 3        # 累计刷屏 3 次移出
+
+    # 加群申请自动处理（机器人需为该群管理员）
+    join_request:
+      auto_approve: false
+      reject_keyword: "广告"   # 申请备注含此关键词自动拒绝（可留空）
+      reject_reason: "本群不接受广告"
+
+  - group_id: 987654321
+    enabled: true
+    whitelist: []
+    welcome:
+      enabled: false
+      message: ""
+    keyword_filter:
+      enabled: true
+      warn_limit: 0
+      mute_limit: 0
+      strike_ttl_hours: 24
+      rules:
+        - pattern: "加我领取"
+          action: mute
+          mute_minutes: 30
+    flood:
+      enabled: true
+      window_seconds: 10
+      max_messages: 8
+      mute_minutes: 10
+      kick_on_repeat: false

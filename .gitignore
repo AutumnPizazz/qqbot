@@ -1,0 +1,15 @@
+# 二进制与产物
+bin/
+*.exe
+
+# 本地配置（含 QQ 号等敏感信息，不入库）
+config.yaml
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+/deploy
+/__pycache__
+/.pi-subagents

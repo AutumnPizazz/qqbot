@@ -1,0 +1,18 @@
+# 版本控制
+.git
+.gitignore
+.dockerignore
+
+# 本地敏感数据（config.yaml 含真实 QQ 号，deploy 含运行时数据）
+config.yaml
+deploy/
+
+# 构建产物
+bin/
+*.exe
+
+# 编辑器 / 杂项
+.idea/
+.vscode/
+*.swp
+*.bundle
