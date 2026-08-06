@@ -1,21 +1,23 @@
 # 多阶段构建：静态编译，镜像内不含 Go 工具链
-FROM golang:1.26-alpine AS builder
+# 构建/运行统一用 glibc 系镜像（debian），避免 musl（alpine）的兼容性差异，
+# 体积换取稳定性与容器内可调试性。
+FROM golang:1.26 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# -tags timetzdata：把时区数据库嵌入二进制（程序用 time.LoadLocation 按群配置时区，
-# 运行阶段是 scratch 没有 /usr/share/zoneinfo，必须嵌入）
+# -tags timetzdata：把时区数据库嵌入二进制（debian-slim 默认不含 tzdata，
+# 程序按群配置 time.LoadLocation，嵌入后不依赖系统时区文件）
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -tags timetzdata -ldflags "-s -w" -o /out/qqbot .
 
-# 仅提取根证书（scratch 没有包管理器，alpine 也只当证书源用）
-FROM alpine:3.21 AS certs
-RUN apk add --no-cache ca-certificates
-
-# 运行阶段：scratch。二进制无 CGO、无外部命令调用，纯静态可直接运行，
-# 镜像内只有二进制 + 根证书 + 示例配置，无 shell/包管理器，攻击面最小。
-FROM scratch
-COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# 运行阶段：Debian slim。glibc 兼容性最好；自带 shell 可 docker exec 排查；
+# 根证书一行 apt 安装，无需额外提取阶段。
+FROM debian:trixie-slim
+# 换国内镜像源（deb.debian.org 在国内常 502/超时）；海外构建可删除本行
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /out/qqbot /app/qqbot
 COPY config.example.yaml /app/config.example.yaml

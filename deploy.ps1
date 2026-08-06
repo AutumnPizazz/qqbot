@@ -36,7 +36,6 @@ $Service     = 'qqbot'
 $Image       = 'deploy-qqbot:latest'  # 必须与 compose 默认镜像名匹配
 # 容器内二进制验证特征字符串（函数名会被 strip，必须用字符串常量，见 docs/LESSONS.md 第 2 条）
 $VersionProbe = '收到消息'
-$CheckTmp     = [System.IO.Path]::GetTempFileName()
 
 function Write-Step([string]$Message) {
     Write-Host "`n>>> $Message" -ForegroundColor Cyan
@@ -64,8 +63,7 @@ if (-not (Test-Path $MasterKey)) {
 
 $compose = @('compose', '-f', $ComposeFile)
 
-try {
-    # 1. 手动构建镜像（不信任 compose build，见 docs/LESSONS.md 第 3 条）
+# 1. 手动构建镜像（不信任 compose build，见 docs/LESSONS.md 第 3 条）
     $buildArgs = @('build')
     if ($NoCache) { $buildArgs += '--no-cache' }
     $buildArgs += @('-t', $Image, '-f', $Dockerfile, $Root)
@@ -75,15 +73,10 @@ try {
     # 2. 强制重建 qqbot 容器（NapCat 不受影响）
     Invoke-Native { & docker @compose up -d --force-recreate $Service } '容器启动'
 
-    # 3. 验证容器内二进制是最新代码（scratch 镜像内无 sh/grep，拷贝到宿主机再查）
+    # 3. 验证容器内二进制是最新代码（debian-slim 自带 sh/grep，直接在容器内查询）
     Write-Step '验证容器内代码版本...'
-    Invoke-Native { & docker cp "${Service}:/app/qqbot" $CheckTmp } 'docker cp'
-    # 字节级搜索：Latin-1 把二进制逐字节映射为字符，UTF-8 特征串转 Latin-1 后精确匹配（不破坏字节）
-    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
-    $data   = $latin1.GetString([System.IO.File]::ReadAllBytes($CheckTmp))
-    $probe  = $latin1.GetString([System.Text.Encoding]::UTF8.GetBytes($VersionProbe))
-    $count  = ([regex]::Matches($data, [regex]::Escape($probe))).Count
-    if ($count -ge 1) {
+    $count = (& docker exec $Service sh -c "grep -a -c '$VersionProbe' /app/qqbot" 2>$null | Out-String).Trim()
+    if ($count -match '^\d+$' -and [int]$count -ge 1) {
         Write-Host "[OK] 容器内二进制包含特征字符串 '$VersionProbe'（命中 $count 处），代码为最新版。" -ForegroundColor Green
     }
     else {
@@ -103,7 +96,3 @@ try {
     Write-Host "    docker compose -f $ComposeFile logs -f qqbot   # 查看日志"
     Write-Host "    docker compose -f $ComposeFile restart qqbot   # 重启服务"
     Write-Host "    docker compose -f $ComposeFile down            # 停止全部服务"
-}
-finally {
-    Remove-Item $CheckTmp -ErrorAction SilentlyContinue
-}

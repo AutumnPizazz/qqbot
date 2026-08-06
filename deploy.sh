@@ -23,8 +23,6 @@ SERVICE="qqbot"
 IMAGE="deploy-qqbot:latest"                       # 必须与 compose 默认镜像名匹配
 # 容器内二进制验证特征字符串（函数名会被 strip，必须用字符串常量，见 docs/LESSONS.md 第 2 条）
 VERSION_PROBE="收到消息"
-CHECK_TMP="$(mktemp)"
-trap 'rm -f "$CHECK_TMP"' EXIT
 
 # ---- 参数解析 ----
 NO_CACHE=""
@@ -62,10 +60,9 @@ docker build $NO_CACHE -t "$IMAGE" -f "$ROOT/Dockerfile" "$ROOT"
 # 2. 强制重建 qqbot 容器（NapCat 不受影响）
 "${compose[@]}" up -d --force-recreate "$SERVICE"
 
-# 3. 验证容器内二进制是最新代码（scratch 镜像内无 sh/grep，拷贝到宿主机再查）
+# 3. 验证容器内二进制是最新代码（debian-slim 自带 sh/grep，直接在容器内查询）
 echo ">>> 验证容器内代码版本..."
-docker cp "$SERVICE:/app/qqbot" "$CHECK_TMP"
-count="$(grep -a -c "$VERSION_PROBE" "$CHECK_TMP" || true)"
+count="$(docker exec "$SERVICE" sh -c "grep -a -c '$VERSION_PROBE' /app/qqbot" 2>/dev/null || true)"
 if [ "${count:-0}" -ge 1 ]; then
   echo "[OK] 容器内二进制包含特征字符串 '$VERSION_PROBE'（命中 $count 处），代码为最新版。"
 else
