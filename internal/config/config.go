@@ -17,7 +17,8 @@ type Config struct {
 	Bot         BotConfig         `yaml:"bot"`
 	OneBot      OneBotConfig      `yaml:"onebot"`
 	LoginNotify LoginNotifyConfig `yaml:"login_notify"` // 登录二维码邮件通知（可选）
-	Email       EmailConfig       `yaml:"-"`           // 邮箱两步验证（control.json v2 生效配置）
+	Email       EmailConfig       `yaml:"-"`            // 邮箱两步验证（control.json v2 生效配置）
+	Watchdog    WatchdogConfig    `yaml:"-"`            // NapCat 掉线监控（control.json v2 生效配置）
 	Groups      []GroupConfig     `yaml:"groups"`
 }
 
@@ -29,6 +30,13 @@ type EmailConfig struct {
 	SMTPUser     string
 	SMTPPassword string
 	To           string
+}
+
+// WatchdogConfig NapCat 掉线监控的生效配置（由 state 从 control.json 转换）。
+type WatchdogConfig struct {
+	Enabled  bool          // 总开关
+	Interval time.Duration // 检测间隔（已应用默认值）
+	EmailTo  string        // 提醒收件人（已回退到系统邮箱收件人）
 }
 
 // BotConfig 机器人基础配置。

@@ -1115,6 +1115,17 @@ async function viewSettings() {
             <button type="button" class="secondary" data-action="clear-token" data-field="webui_token">清除 WebUI Token</button>
             <button type="button" class="secondary" data-action="test-napcat">测试 NapCat 连接</button>
           </div>
+          <h3>NapCat 掉线监控</h3>
+          <p class="muted" style="margin-bottom:6px">检测 NapCat 登录状态：掉线时向提醒邮箱发送一封邮件（每个掉线周期一封，扫码恢复后重置）。
+            独立于邮箱验证功能——未启用或未配置时不影响其他功能。</p>
+          <label class="inline" style="margin:6px 0"><input type="checkbox" name="watchdog_enabled" ${s.system.watchdog.enabled ? "checked" : ""}> 启用掉线监控</label>
+          <div class="row">
+            <label style="width:170px">检测间隔（分钟）<input type="number" name="watchdog_interval_minutes" value="${s.system.watchdog.interval_minutes || 10}" min="1" max="1440"></label>
+            <label style="flex:2;min-width:200px">提醒收件邮箱（留空 = 用邮箱验证的收件人）<input type="text" name="watchdog_email_to" value="${esc(s.system.watchdog.email_to || "")}" placeholder="留空自动使用系统邮箱收件人"></label>
+          </div>
+          <div class="row">
+            <button type="button" class="secondary" data-action="test-watchdog">发送测试提醒</button>
+          </div>
           <h3>邮箱两步验证（登录安全）</h3>
           <p class="muted" style="margin-bottom:6px">开启后：输入正确密码 → 向收件邮箱发送 6 位验证码 → 验证通过才登录。
             使用邮箱的 <b>SMTP 授权码</b>（QQ/163 邮箱在设置中生成），建议同时开启「登录保护」。</p>
@@ -1180,7 +1191,7 @@ async function viewSettings() {
         toast("已清除"); location.hash = "#/settings";
       } catch (e) { toast(e.message, true); }
     }
-    if (action === "test-onebot" || action === "test-napcat" || action === "test-email") {
+    if (action === "test-onebot" || action === "test-napcat" || action === "test-email" || action === "test-watchdog") {
       const msg = document.getElementById("settings-msg");
       msg.textContent = "测试中…";
       try {
@@ -1239,6 +1250,11 @@ function collectSystemSettings(form) {
       smtp_port: Number(fd.get("smtp_port") || 465),
       smtp_user: fd.get("smtp_user"),
       to: fd.get("email_to"),
+    },
+    watchdog: {
+      enabled: fd.get("watchdog_enabled") === "on",
+      interval_minutes: Number(fd.get("watchdog_interval_minutes") || 10),
+      email_to: fd.get("watchdog_email_to"),
     },
   };
   const at = String(fd.get("access_token") || "");

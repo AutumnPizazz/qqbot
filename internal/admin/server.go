@@ -9,6 +9,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"qqbot/internal/napcat"
 	"qqbot/internal/onebot"
 	"qqbot/internal/state"
+	"qqbot/internal/watchdog"
 )
 
 // Options 是 Server 的依赖注入。
@@ -36,9 +38,9 @@ type Options struct {
 	QueryAudit     func(bot.AuditQuery) bot.AuditPage
 	RecentMessages func(groupID int64, limit int) []bot.MessageRecord
 	Counters       func(groupID int64) map[string]map[int64]int // 规则计数器状态（可 nil）
-	EmailSender    mailer.Sender                               // 邮箱验证码发送器（nil=按生效配置构建；测试注入）
-	SecureCookies  bool     // Cookie Secure 标志（默认 HTTPS/反代场景 true）
-	TrustedProxies []string // 可信反向代理 IP（仅这些来源允许提供 X-Forwarded-For）
+	EmailSender    mailer.Sender                                // 邮箱验证码发送器（nil=按生效配置构建；测试注入）
+	SecureCookies  bool                                         // Cookie Secure 标志（默认 HTTPS/反代场景 true）
+	TrustedProxies []string                                     // 可信反向代理 IP（仅这些来源允许提供 X-Forwarded-For）
 }
 
 // Server 是管理后台 HTTP 服务。
@@ -52,19 +54,19 @@ type Server struct {
 	started  time.Time
 	idem     *idemStore
 
-	compsMu      sync.RWMutex
-	mgr          *onebot.Manager
-	actions      *bot.ActionService
-	queryAudit   func(bot.AuditQuery) bot.AuditPage
-	recent       func(int64, int) []bot.MessageRecord
-	counters     func(int64) map[string]map[int64]int // 规则计数器状态（可 nil）
-	trustedProxies []string // 可信反向代理 IP（QQBOT_TRUST_PROXY）
+	compsMu        sync.RWMutex
+	mgr            *onebot.Manager
+	actions        *bot.ActionService
+	queryAudit     func(bot.AuditQuery) bot.AuditPage
+	recent         func(int64, int) []bot.MessageRecord
+	counters       func(int64) map[string]map[int64]int // 规则计数器状态（可 nil）
+	trustedProxies []string                             // 可信反向代理 IP（QQBOT_TRUST_PROXY）
 
 	napMu     sync.Mutex
 	napClient *napcat.Client // 懒构建；配置变更后重建
 
-	mfa         *mfaStore    // 邮箱两步验证票据（纯内存）
-	mailMu      sync.Mutex
+	mfa          *mfaStore // 邮箱两步验证票据（纯内存）
+	mailMu       sync.Mutex
 	mailOverride mailer.Sender // 测试注入的发信器（nil=按配置构建）
 }
 
@@ -190,6 +192,7 @@ func (s *Server) apiRoutes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/test-onebot", s.handleTestOneBot)
 	mux.HandleFunc("POST /api/v1/settings/test-napcat", s.handleTestNapCat)
 	mux.HandleFunc("POST /api/v1/settings/test-email", s.handleTestEmail)
+	mux.HandleFunc("POST /api/v1/settings/test-watchdog", s.handleTestWatchdog)
 
 	mux.HandleFunc("GET /api/v1/config/history", s.handleHistory)
 	mux.HandleFunc("POST /api/v1/config/history/{revision}/restore", s.handleRestore)
@@ -303,3 +306,85 @@ func configHash(s string) string {
 }
 
 var _ = strings.TrimSpace
+
+// StartNapCatWatchdog 启动 NapCat 掉线监控（watchdog 包），并订阅配置变更热生效：
+// 保存系统设置后自动按新配置启停，无需重启进程。
+//
+// 高度可配置（control.json system.watchdog，后台系统设置可调）：
+//   - enabled：总开关，默认关闭——不启用时完全不影响程序运行；
+//   - interval_minutes：检测间隔（分钟，默认 10）；
+//   - email_to：提醒收件人，空则回退到系统邮箱收件人（Email.To）。
+//
+// 依赖（缺失时仅记录日志说明原因，不阻塞主程序）：
+//   - NapCat WebUI 配置（检测前提）；
+//   - SMTP 配置完整（发信前提，复用登录验证码通道，授权码来自 control.json 加密存储）。
+// 非阻塞：监控 goroutine 随 ctx 取消而退出。
+func (s *Server) StartNapCatWatchdog(ctx context.Context) {
+	var mu sync.Mutex
+	var cancel context.CancelFunc
+
+	start := func() {
+		wd := s.opts.Service.Effective().Watchdog
+		if !wd.Enabled {
+			return // 默认关闭：静默跳过，不影响任何功能
+		}
+		cur := s.opts.Service.Current()
+		if cur == nil || cur.System.NapCat.WebUIURL == "" {
+			slog.Warn("NapCat 掉线监控已开启但未配置 NapCat WebUI 地址，监控未运行")
+			return
+		}
+		if wd.EmailTo == "" {
+			slog.Warn("NapCat 掉线监控已开启但无提醒收件人（请配置 watchdog.email_to 或系统邮箱收件人），监控未运行")
+			return
+		}
+		e := s.opts.Service.Effective().Email
+		if e.SMTPHost == "" || e.SMTPPort <= 0 || e.SMTPUser == "" || e.SMTPPassword == "" {
+			slog.Warn("NapCat 掉线监控已开启但 SMTP 未配置完整（可在系统设置中配置，不影响其他功能），监控未运行")
+			return
+		}
+		// 检测：复用 napcat.Client 的登录状态查询（含短时缓存，分钟级间隔无压力）
+		check := func(ctx context.Context) (bool, error) {
+			client, err := s.napcatClient()
+			if err != nil {
+				return false, err
+			}
+			st, err := client.CheckLogin(ctx)
+			if err != nil {
+				return false, err
+			}
+			return st.IsLogin, nil
+		}
+		// 发信：复用登录验证码的 SMTP 通道（授权码解密自 control.json）
+		send := func(to, subject, body string) error {
+			sender := s.emailSender()
+			if sender == nil {
+				return fmt.Errorf("邮箱发送组件不可用")
+			}
+			return sender.Send(to, subject, body)
+		}
+		wctx, wcancel := context.WithCancel(ctx)
+		cancel = wcancel
+		go watchdog.Watch(wctx, check, send, watchdog.Options{
+			Interval: wd.Interval,
+			To:       wd.EmailTo,
+			Logger:   slog.Default(),
+		})
+		slog.Info("NapCat 掉线监控已启动", "interval", wd.Interval, "to", wd.EmailTo)
+	}
+	stop := func() {
+		if cancel != nil {
+			cancel()
+			cancel = nil
+			slog.Info("NapCat 掉线监控已停止（配置变更）")
+		}
+	}
+
+	start() // 首次按当前配置启动
+	// 配置热生效：保存系统设置后自动重启监控
+	s.opts.Service.Subscribe(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		stop()
+		start()
+	})
+}

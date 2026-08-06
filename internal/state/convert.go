@@ -2,6 +2,7 @@ package state
 
 import (
 	"qqbot/internal/config"
+	"time"
 )
 
 // 敏感字段路径（AAD 的一部分，跨版本稳定）。
@@ -51,6 +52,11 @@ func buildEffectiveConfig(c *Control, keys *MasterKey) (*config.Config, error) {
 			SMTPUser: c.System.Email.SMTPUser,
 			To:       c.System.Email.To,
 		},
+		Watchdog: config.WatchdogConfig{
+			Enabled:  c.System.Watchdog.Enabled,
+			Interval: watchdogInterval(c.System.Watchdog.IntervalMinutes),
+			EmailTo:  watchdogEmailTo(c.System.Watchdog.EmailTo, c.System.Email.To),
+		},
 		Groups: make([]config.GroupConfig, 0, len(c.Groups)),
 	}
 	if c.System.Email.SMTPPassword != nil {
@@ -75,4 +81,20 @@ func buildEffectiveConfig(c *Control, keys *MasterKey) (*config.Config, error) {
 		return nil, newValidationError("config", err.Error())
 	}
 	return cfg, nil
+}
+
+// watchdogInterval 归一化检测间隔：<=0 用默认 10 分钟。
+func watchdogInterval(minutes int) time.Duration {
+	if minutes <= 0 {
+		return 10 * time.Minute
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// watchdogEmailTo 归一化提醒收件人：优先 watchdog.email_to，回退系统邮箱收件人。
+func watchdogEmailTo(watchTo, emailTo string) string {
+	if watchTo != "" {
+		return watchTo
+	}
+	return emailTo
 }

@@ -113,6 +113,9 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 		os.Exit(1)
 	}
 
+	// NapCat 掉线监控：邮箱 + NapCat 配置完整时自动启用（掉线发一封邮件提醒）
+	adminSrv.StartNapCatWatchdog(ctx)
+
 	// startComponents 创建 OneBot Manager 与 Bot，接入配置热生效（幂等，仅启动一次）。
 	var startOnce sync.Once
 	startComponents := func() {

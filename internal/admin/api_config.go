@@ -111,6 +111,11 @@ type settingsDTO struct {
 			} `json:"smtp_password"`
 			To string `json:"to"`
 		} `json:"email"`
+		Watchdog struct {
+			Enabled         bool   `json:"enabled"`
+			IntervalMinutes int    `json:"interval_minutes"`
+			EmailTo         string `json:"email_to"`
+		} `json:"watchdog"`
 	} `json:"system"`
 }
 
@@ -132,6 +137,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	dto.System.Email.SMTPUser = cur.System.Email.SMTPUser
 	dto.System.Email.SMTPPassword.Configured = cur.System.Email.SMTPPassword.Configured()
 	dto.System.Email.To = cur.System.Email.To
+	dto.System.Watchdog.Enabled = cur.System.Watchdog.Enabled
+	dto.System.Watchdog.IntervalMinutes = cur.System.Watchdog.IntervalMinutes
+	dto.System.Watchdog.EmailTo = cur.System.Watchdog.EmailTo
 	writeJSON(w, http.StatusOK, dto)
 }
 
@@ -167,6 +175,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 				SMTPPassword json.RawMessage `json:"smtp_password"`
 				To           *string         `json:"to"`
 			} `json:"email"`
+			Watchdog *struct {
+				Enabled         *bool   `json:"enabled"`
+				IntervalMinutes *int    `json:"interval_minutes"`
+				EmailTo         *string `json:"email_to"`
+			} `json:"watchdog"`
 		} `json:"system"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -232,6 +245,17 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if em.To != nil {
 				c.System.Email.To = *em.To
+			}
+		}
+		if wd := req.System.Watchdog; wd != nil {
+			if wd.Enabled != nil {
+				c.System.Watchdog.Enabled = *wd.Enabled
+			}
+			if wd.IntervalMinutes != nil {
+				c.System.Watchdog.IntervalMinutes = *wd.IntervalMinutes
+			}
+			if wd.EmailTo != nil {
+				c.System.Watchdog.EmailTo = *wd.EmailTo
 			}
 		}
 		return nil
@@ -349,6 +373,36 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detail": "测试邮件已发送至 " + eff.Email.To})
+}
+
+// handleTestWatchdog 发送一封掉线提醒测试邮件（验证监控发信通路）。
+// POST /api/v1/settings/test-watchdog
+func (s *Server) handleTestWatchdog(w http.ResponseWriter, r *http.Request) {
+	eff := s.opts.Service.Effective()
+	if eff == nil || eff.Email.SMTPHost == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": "SMTP 未配置完整（需 SMTP 服务器/账号）"})
+		return
+	}
+	to := eff.Watchdog.EmailTo
+	if to == "" {
+		to = eff.Email.To
+	}
+	if to == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": "无提醒收件人（watchdog.email_to 与系统邮箱收件人均为空）"})
+		return
+	}
+	sender := s.emailSender()
+	if sender == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": "邮箱发送组件不可用"})
+		return
+	}
+	err := sender.Send(to, "【QQBot】NapCat 掉线监控测试",
+		"这是一封掉线监控测试邮件，发信通路正常。")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": cleanErr(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detail": "测试提醒已发送至 " + to})
 }
 
 // cleanErr 清洗错误信息（去除 URL/凭据细节）。

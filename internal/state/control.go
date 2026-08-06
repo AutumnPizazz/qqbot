@@ -45,12 +45,13 @@ type Control struct {
 
 // SystemConfig 系统级配置（对应旧 config.yaml 的 bot + onebot + NapCat 部分）。
 type SystemConfig struct {
-	BotName  string       `json:"bot_name"`
-	Owner    int64        `json:"owner"` // 超级管理员 QQ
-	Timezone string       `json:"timezone,omitempty"`
-	OneBot   OneBotConfig `json:"onebot"`
-	NapCat   NapCatConfig `json:"napcat"`
-	Email    EmailConfig  `json:"email,omitempty"` // 邮箱两步验证
+	BotName  string         `json:"bot_name"`
+	Owner    int64          `json:"owner"` // 超级管理员 QQ
+	Timezone string         `json:"timezone,omitempty"`
+	OneBot   OneBotConfig   `json:"onebot"`
+	NapCat   NapCatConfig   `json:"napcat"`
+	Email    EmailConfig    `json:"email,omitempty"`    // 邮箱两步验证
+	Watchdog WatchdogConfig `json:"watchdog,omitempty"` // NapCat 掉线监控（独立于邮箱功能）
 }
 
 // EmailConfig SMTP 发信配置（登录邮箱验证码）。
@@ -76,13 +77,21 @@ type NapCatConfig struct {
 	WebUIToken *EncryptedValue `json:"webui_token,omitempty"`
 }
 
+// WatchdogConfig NapCat 掉线监控（独立于邮箱两步验证：
+// 不启用/未配置时完全不影响程序运行；启用后掉线时向收件邮箱发一封提醒）。
+type WatchdogConfig struct {
+	Enabled         bool   `json:"enabled,omitempty"`          // 总开关（默认关）
+	IntervalMinutes int    `json:"interval_minutes,omitempty"` // 检测间隔（分钟）；<=0 时用默认 10
+	EmailTo         string `json:"email_to,omitempty"`         // 提醒收件人；空则回退到 Email.To
+}
+
 // GroupConfig 单个群的完整配置 DTO（含群备注 remark，随同一 revision 提交）。
 // v2 起规则统一由 rules 表达（事件→条件→动作），旧四模块已迁移。
 type GroupConfig struct {
-	GroupID   int64       `json:"group_id"`
-	Enabled   bool        `json:"enabled"`
-	Remark    string      `json:"remark,omitempty"`
-	Whitelist []int64     `json:"whitelist,omitempty"`
+	GroupID   int64        `json:"group_id"`
+	Enabled   bool         `json:"enabled"`
+	Remark    string       `json:"remark,omitempty"`
+	Whitelist []int64      `json:"whitelist,omitempty"`
 	Rules     []rules.Rule `json:"rules,omitempty"` // 按序匹配，break 控制是否继续
 }
 
