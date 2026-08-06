@@ -1,0 +1,35 @@
+# 持续集成：每次 push / PR 自动执行静态检查与全量测试
+# 测试为纯本地 mock（OneBot/NapCat 全生命周期模拟），无外部网络依赖。
+name: CI
+
+on:
+  push:
+    branches: [dev, stable]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 编译检查
+        run: go build ./...
+
+      - name: 全量测试
+        run: go test ./...
+
+      - name: 竞态检测（Linux）
+        run: go test -race ./...

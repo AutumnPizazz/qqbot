@@ -13,3 +13,4 @@ config.yaml
 /deploy
 /__pycache__
 /.pi-subagents
+dist/

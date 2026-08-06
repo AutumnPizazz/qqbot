@@ -1,0 +1,123 @@
+# 预构建发布：stable 分支更新（或手动触发）时：
+#   1. 交叉编译 6 平台二进制 → 发布 GitHub Release（stable-<commit>，附 SHA256SUMS）
+#   2. 构建多平台 Docker 镜像 → GHCR（ghcr.io/<owner>/qqbot:stable + :latest）
+# 构建参数与 Dockerfile 保持一致（CGO_ENABLED=0、-tags timetzdata、-trimpath、-s -w）。
+name: Release
+
+on:
+  push:
+    branches: [stable]
+  workflow_dispatch:
+
+permissions:
+  contents: write    # 发布 Release
+  packages: write    # 推送 GHCR
+
+jobs:
+  build-binaries:
+    name: 构建 ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, windows, darwin]
+        arch: [amd64, arm64]
+        include:
+          - os: windows
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 交叉编译
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -trimpath -tags timetzdata -ldflags "-s -w" \
+            -o dist/qqbot-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qqbot-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: 发布 GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4   # 取 commit 短 hash 用于 Release 命名
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成 SHA256 校验和
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: 计算 Release 名称（stable-<commit>）
+        id: name
+        run: echo "tag=stable-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.name.outputs.tag }}
+          name: stable ${{ github.sha }}
+          files: dist/*
+          body: |
+            ## 预构建产物（GitHub Actions 自动生成，来自 stable 分支）
+
+            - **Docker 镜像**（linux/amd64 + linux/arm64，多架构）：
+              ```bash
+              docker pull ghcr.io/${{ github.repository }}:stable
+              docker pull ghcr.io/${{ github.repository }}:latest
+              ```
+            - **二进制**：下载对应平台文件（Windows 用 `qqbot-windows-amd64.exe`），
+              运行 `./qqbot --data-dir data --master-key-file master.key`。
+            - 校验：`sha256sum -c SHA256SUMS`
+            - 来源 commit：`${{ github.sha }}`
+
+  docker:
+    name: 构建并推送 Docker 镜像（GHCR）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 规范化镜像名（GHCR 要求全小写）
+        id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta-tags
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          tags: |
+            type=raw,value=stable
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-tags.outputs.tags }}
+          labels: ${{ steps.meta-tags.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

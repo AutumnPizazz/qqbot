@@ -1,5 +1,8 @@
 # qqbot
 
+[![CI](https://github.com/AutumnPizazz/qqbot/actions/workflows/ci.yml/badge.svg)](https://github.com/AutumnPizazz/qqbot/actions/workflows/ci.yml)
+[![Release](https://github.com/AutumnPizazz/qqbot/actions/workflows/release.yml/badge.svg)](https://github.com/AutumnPizazz/qqbot/actions/workflows/release.yml)
+
 基于 **Go + OneBot v11 (NapCat)** 的 QQ 群管理机器人：**网页可视化规则引擎**（事件 → 条件组合 → 动作）
 处理关键词/刷屏/新人欢迎/加群审批等行为，内置**网页管理后台**（配置 / 登录二维码 / 人工群管 / 审计），
 全部能力网页化，无需私聊指令或邮件。
@@ -16,6 +19,8 @@
 
 ## 快速开始（Docker 推荐）
 
+> 部署只需安装 Docker（NapCat 协议端必须容器化），**无需 Go / Make / Python 等环境**。
+
 ```bash
 cd deploy
 openssl rand -hex 32 > keys/master.key     # 主密钥（与数据目录分开备份！）
@@ -29,6 +34,22 @@ docker logs qqbot | grep SETUP_TOKEN       # 取首次 setup token
 > - 管理端口仅映射内网（127.0.0.1），请通过 VPN/反向代理访问，勿直接暴露公网
 > - 机器人需在目标群拥有**管理员**权限
 > - 二进制方式：`go build -o bin/qqbot . && ./bin/qqbot --data-dir data --master-key-file master.key`
+
+## 预构建产物（GitHub Actions 自动发布）
+
+**stable 分支**每次更新后自动构建发布，无需本地 Go 环境：
+
+- **Docker 镜像**（linux/amd64 + arm64 多架构）推送到 GHCR，`latest` 始终跟随最新 stable：
+
+  ```bash
+  docker pull ghcr.io/autumnpizazz/qqbot:latest   # 或 :stable
+  ```
+
+  首次使用需在 GitHub → Packages 中把该镜像设为 **public** 才能免登录拉取；
+  compose 改用预构建镜像：删掉 `build:` 段、加 `image: ghcr.io/autumnpizazz/qqbot:latest`（见 deploy/docker-compose.yml 注释）。
+- **二进制**（Linux / Windows / macOS × amd64 / arm64，附 SHA256SUMS）发布在 [Releases](https://github.com/AutumnPizazz/qqbot/releases)，每个对应一个 `stable-<commit>` Release。
+
+  运行：`./qqbot --data-dir data --master-key-file master.key`
 
 ## 网页后台速览
 
@@ -60,7 +81,8 @@ docker logs qqbot | grep SETUP_TOKEN       # 取首次 setup token
 qqbot config validate --data-dir data --master-key-file master.key   # 校验配置与密钥匹配
 qqbot secrets rotate --data-dir data --old-key-file k1 --new-key-file k2  # 轮换主密钥（停机）
 qqbot admin reset-password --data-dir data                          # 重置管理员密码（停机）
-python deploy.py                                                     # 构建并更新 Docker 服务
+./deploy.sh                 # 构建并更新 Docker 服务（开发用；Linux/macOS 或 Git Bash）
+pwsh ./deploy.ps1           # 同上（Windows 原生，PowerShell 7+；需 Docker Desktop）
 ```
 
 ## 迁移服务器 / 备份
@@ -80,8 +102,9 @@ python deploy.py                                                     # 构建并
 ## 开发
 
 ```bash
-make run            # 本地运行
-make build-linux    # 交叉编译
+go run . --data-dir data --master-key-file master.key   # 本地运行（需先准备主密钥）
+# 交叉编译到 Linux 服务器（或直接 docker build，见 Dockerfile）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o bin/qqbot-linux-amd64 .
 go test ./...       # 测试（含 E2E：mock OneBot/NapCat 全生命周期）
 go test -race ./... # 竞态检测
 ```
