@@ -524,6 +524,19 @@ function openRuleEditor(gid, rule, meta, onSave, counterIds) {
   const rerender = () => {
     const box = document.getElementById("rule-editor-items");
     if (!box) return;
+    // 重建前先把当前 DOM 输入同步回 state（否则添加/删除条目会丢已填内容）
+    for (const item of box.querySelectorAll(".rule-item")) {
+      const kind = item.dataset.kind;
+      const target = kind === "cond" ? state.when : state.then;
+      const entry = target[Number(item.dataset.idx)];
+      if (!entry) continue;
+      const typeEl = item.querySelector("[data-f=type]");
+      if (typeEl) entry.type = typeEl.value;
+      const neg = item.querySelector("[data-f=negate]");
+      if (neg) entry.negate = neg.classList.contains("on");
+      const fields = item.querySelector(".param-fields");
+      if (fields) entry.params = collectParams(fields);
+    }
     // 切换事件时丢弃不适用类型（设计文档 §11.2）
     state.when = state.when.filter((c) => metaType(meta.conditions, c.type) && metaType(meta.conditions, c.type).events.includes(state.event));
     state.then = state.then.filter((a) => metaType(meta.actions, a.type) && metaType(meta.actions, a.type).events.includes(state.event));
@@ -604,6 +617,11 @@ function openRuleEditor(gid, rule, meta, onSave, counterIds) {
     const negBtn = e.target.closest("[data-f=negate]");
     if (negBtn) {
       negBtn.classList.toggle("on");
+      // 同步回 state（避免重渲染时丢失）
+      const item = negBtn.closest(".rule-item");
+      const target = item.dataset.kind === "cond" ? state.when : state.then;
+      const entry = target[Number(item.dataset.idx)];
+      if (entry) entry.negate = negBtn.classList.contains("on");
       return;
     }
     // 条件/动作行内的删除按钮（data-item-action）优先处理，
