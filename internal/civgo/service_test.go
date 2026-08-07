@@ -15,13 +15,22 @@ import (
 
 // ---- fake Manager ----
 
+// fakeManager 模拟 onebot.Manager：SendGroupMsgAt 内部自动加 [CQ:at,qq=xxx] 前缀
+// （与真实实现一致，用于验证 civgo 不重复拼接 @）。
 type fakeManager struct {
 	mu      sync.Mutex
-	sent    []string // 发送的文本（按序）
+	sent    []string // 发送的文本（按序，含自动 @ 前缀）
 	handler onebot.Handler
 }
 
 func (f *fakeManager) SendGroupMsgAt(groupID, userID int64, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, fmt.Sprintf("[CQ:at,qq=%d] %s", userID, text))
+	return nil
+}
+
+func (f *fakeManager) SendGroupMsg(groupID int64, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, text)
@@ -149,8 +158,9 @@ func TestOnMessageBasicFlow(t *testing.T) {
 	if !strings.Contains(reply, "弓手射程 2 格") {
 		t.Errorf("回答缺失: %s", reply)
 	}
-	if !strings.Contains(reply, "[CQ:at,qq=1001]") {
-		t.Errorf("应 @提问者: %s", reply)
+	// @ 前缀由 SendGroupMsgAt 内部生成且只出现一次（civgo 不重复拼接）
+	if n := strings.Count(reply, "[CQ:at,qq=1001]"); n != 1 {
+		t.Errorf("@ 应恰好 1 次（SendGroupMsgAt 自动生成），got %d: %s", n, reply)
 	}
 	if !strings.Contains(reply, "📄") || !strings.Contains(reply, "archer.md") {
 		t.Errorf("应附来源: %s", reply)
@@ -333,11 +343,19 @@ func TestSendAnswerSplits(t *testing.T) {
 	if mgr.count() < 2 {
 		t.Fatalf("长回答应分多条发送，got %d", mgr.count())
 	}
-	first := mgr.allSent()[0]
-	if !strings.Contains(first, "[CQ:at,qq=1001]") {
-		t.Errorf("首条应带 @: %s", first[:30])
+	all := mgr.allSent()
+	// 首条 @ 提问者（SendGroupMsgAt 自动生成）
+	if !strings.Contains(all[0], "[CQ:at,qq=1001]") {
+		t.Errorf("首条应带 @: %s", all[0][:30])
 	}
-	last := mgr.allSent()[len(mgr.allSent())-1]
+	// 后续条不再重复 @（SendGroupMsg 纯文本）
+	for i := 1; i < len(all); i++ {
+		if strings.Contains(all[i], "[CQ:at,qq=1001]") {
+			t.Errorf("第 %d 条不应重复 @: %s", i+1, all[i][:30])
+		}
+	}
+	// 末条附来源
+	last := all[len(all)-1]
 	if !strings.Contains(last, "📄 a.md") {
 		t.Errorf("末条应附来源: %s", last[:50])
 	}

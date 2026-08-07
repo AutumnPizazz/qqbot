@@ -30,6 +30,8 @@ type Registerer interface {
 type Manager interface {
 	Sender
 	Registerer
+	// SendGroupMsg 纯文本群消息（分条回复时除首条外避免重复 @）
+	SendGroupMsg(groupID int64, text string) error
 }
 
 // 编译期断言：onebot.Manager 满足 civgo 依赖。
@@ -264,21 +266,23 @@ func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
 	if len(sources) > 0 {
 		tail = "\n\n📄 " + strings.Join(sources, "、")
 	}
-	first := "[CQ:at,qq=" + strconv.FormatInt(m.UserID, 10) + "] " + answer
-	parts := splitReply(first, tail)
+	// SendGroupMsgAt 内部自动加 [CQ:at,qq=<uid>] 前缀（仅首条 @，后续条纯文本）
+	parts := splitReply(answer, tail)
 	for i, p := range parts {
-		if i < len(parts)-1 || tail == "" {
-			if err := s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, p); err != nil {
-				slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
+		text := p
+		if i == len(parts)-1 && tail != "" {
+			text = p + tail
+			if runeLen(text) > DefaultMaxReplyLen {
+				text = truncateRunes(p, DefaultMaxReplyLen-runeLen(tail)) + tail
 			}
-			continue
 		}
-		// 最后一条附来源尾注
-		final := p + tail
-		if runeLen(final) > DefaultMaxReplyLen {
-			final = truncateRunes(p, DefaultMaxReplyLen-runeLen(tail)) + tail
+		var err error
+		if i == 0 {
+			err = s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, text)
+		} else {
+			err = s.mgr.SendGroupMsg(m.GroupID, text)
 		}
-		if err := s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, final); err != nil {
+		if err != nil {
 			slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
 		}
 	}
@@ -317,9 +321,9 @@ func splitReply(first, tail string) []string {
 	return parts
 }
 
-// reply 快捷回复（不占限流额度）。
+// reply 快捷回复（不占限流额度）。SendGroupMsgAt 内部自动 @ 提问者。
 func (s *Service) reply(m onebot.GroupMessage, text string) {
-	if err := s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, "[CQ:at,qq="+strconv.FormatInt(m.UserID, 10)+"] "+text); err != nil {
+	if err := s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, text); err != nil {
 		slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
 	}
 }
