@@ -24,6 +24,9 @@ type SyncState struct {
 	LastIndexSum string    `json:"last_index_sum"`
 }
 
+// gitCommandTimeout 单条 git 命令超时（服务器访问 GitHub 不稳定时防止悬挂）。
+const gitCommandTimeout = 90 * time.Second
+
 // Syncer git 轮询同步器：首次 clone（浅 + sparse），之后定时 fetch →
 // 检测 docs_path 提交变化 → merge --ff-only → 增量重建索引。
 type Syncer struct {
@@ -104,6 +107,17 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 	}
 
 	branch := cfg.Repo.Branch
+	if branch == "" {
+		// 仓库已存在时从本地 git 配置读当前分支（零网络，不依赖 GitHub 可达性）；
+		// 仅首次 clone 前需要网络探测默认分支
+		if _, err := os.Stat(filepath.Join(s.repoDir, ".git")); err == nil {
+			if out, _, err := s.git(ctx, s.repoDir, "branch", "--show-current"); err == nil {
+				if b := strings.TrimSpace(out); b != "" {
+					branch = b
+				}
+			}
+		}
+	}
 	if branch == "" {
 		b, err := s.detectDefaultBranch(ctx, cfg.Repo.URL)
 		if err != nil {
@@ -339,9 +353,11 @@ func (s *Syncer) saveState(st SyncState) {
 	_ = os.Rename(tmpName, s.statePath)
 }
 
-// git 执行 git 命令；dir 为空表示不指定工作目录。
+// git 执行 git 命令（带超时，防止远端网络悬挂）；dir 为空表示不指定工作目录。
 func (s *Syncer) git(ctx context.Context, dir string, args ...string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	gctx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(gctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

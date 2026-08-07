@@ -362,6 +362,28 @@ func TestSyncStatePersist(t *testing.T) {
 	}
 }
 
+// TestSyncBranchLocalAfterClone 仓库已存在后分支读取走本地（零网络探测）：
+// 远端 URL 不可达时应在 fetch 阶段失败（而非卡在 ls-remote 探测）。
+func TestSyncBranchLocalAfterClone(t *testing.T) {
+	remote := setupRemoteBranch(t, "stable")
+	syn, _, _, _ := testSyncerBranch(t, remote, "") // 分支留空
+	ctx := context.Background()
+	if err := syn.syncOnce(ctx); err != nil {
+		t.Fatalf("首次同步失败: %v", err)
+	}
+	// 把 URL 改成不可达路径：若分支仍走网络探测会先失败在探测；
+	// 本地分支缓存生效时应失败在 fetch
+	cfg := syn.store.Get()
+	cfg.Repo.URL = filepath.Join(t.TempDir(), "nonexist.git")
+	err := syn.syncOnce(ctx)
+	if err == nil {
+		t.Fatal("不可达 URL 应失败")
+	}
+	if !strings.Contains(err.Error(), "fetch") {
+		t.Fatalf("应失败在 fetch 阶段（本地分支缓存生效），got: %v", err)
+	}
+}
+
 // TestSyncRebuildAfterIndexLost 模拟「LastHead 已推进但索引从未成功构建」
 // （如首次 clone 后建索引失败，或索引文件丢失）：即使远端无新提交也必须重建索引。
 func TestSyncRebuildAfterIndexLost(t *testing.T) {
