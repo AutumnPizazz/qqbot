@@ -16,7 +16,7 @@ FROM debian:trixie-slim
 # 换国内镜像源（deb.debian.org 在国内常 502/超时）；海外构建可删除本行
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /out/qqbot /app/qqbot

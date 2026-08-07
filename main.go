@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 
 	"qqbot/internal/admin"
 	"qqbot/internal/bot"
+	"qqbot/internal/civgo"
 	"qqbot/internal/config"
 	"qqbot/internal/onebot"
 	"qqbot/internal/state"
@@ -142,6 +144,14 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 				}
 			})
 			b.Start()
+			// civgo 社区服务：独立配置（data/civgo/civgo.json），未配置/未启用时零副作用
+			if cv, cerr := civgo.New(civgo.Options{DataDir: dataDir, Manager: manager}); cerr != nil {
+				if !errors.Is(cerr, civgo.ErrNotConfigured) {
+					slog.Error("civgo 模块初始化失败", "err", cerr)
+				}
+			} else {
+				cv.Start(ctx)
+			}
 			go func() {
 				if err := manager.Run(ctx); err != nil {
 					slog.Error("OneBot 连接循环异常退出", "err", err)
