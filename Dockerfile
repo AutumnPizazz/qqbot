@@ -13,8 +13,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -tags timetzdata -ldflags "-s -w
 # 运行阶段：Debian slim。glibc 兼容性最好；自带 shell 可 docker exec 排查；
 # 根证书一行 apt 安装，无需额外提取阶段。
 FROM debian:trixie-slim
-# 换国内镜像源（deb.debian.org 在国内常 502/超时）；海外构建可删除本行
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+# apt 镜像源可经构建参数覆盖（国内默认阿里云；阿里云尚未同步 trixie 时
+# 可传 --build-arg APT_MIRROR=deb.debian.org 走官方源，需可访问外网）
+ARG APT_MIRROR=mirrors.aliyun.com
+RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
