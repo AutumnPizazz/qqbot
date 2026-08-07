@@ -337,6 +337,42 @@ func TestScanDocsSkipsUnsupported(t *testing.T) {
 	sort.Strings(files) // 确认已排序
 }
 
+func TestRebuildKeywordNoEmbed(t *testing.T) {
+	// keyword 模式：索引构建不调用外部嵌入（网关无嵌入模型时的核心保障）
+	dir := t.TempDir()
+	writeDoc(t, dir, "a.md", "# 弓手\n弓手射程 2 格。\n")
+	cfg := testAIConfig()
+	ce := &countEmbed{EmbedClient: NewEmbedClient(cfg), n: &atomic.Int64{}}
+	ix := NewIndexer(ce, filepath.Join(t.TempDir(), "i.json"), RetrievalConfig{
+		Mode: "keyword", TopK: 3, ChunkSize: 800, MinScore: 0.2,
+	})
+	sum, err := ix.RebuildChanged(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("keyword 构建失败: %v", err)
+	}
+	if ce.n.Load() != 0 {
+		t.Errorf("keyword 模式不应调用嵌入，got %d", ce.n.Load())
+	}
+	if sum.Chunks != 1 {
+		t.Fatalf("应有 1 块，got %d", sum.Chunks)
+	}
+	// keyword 检索可用
+	hits := ix.KeywordSearch("弓手", 3)
+	if len(hits) != 1 || hits[0].Chunk.File != "a.md" {
+		t.Errorf("keyword 检索失败: %+v", hits)
+	}
+	// 持久化往返：keyword 索引（无向量）也能加载
+	ix.Save()
+	ix2 := NewIndexer(ce, filepath.Join(t.TempDir(), "i2.json"), RetrievalConfig{Mode: "keyword"})
+	// 复制保存的文件
+	data, _ := os.ReadFile(ix.path)
+	os.WriteFile(ix2.path, data, 0o644)
+	ix2.Load()
+	if len(ix2.entries) != 1 {
+		t.Fatalf("keyword 索引加载后应 1 条，got %d", len(ix2.entries))
+	}
+}
+
 func TestRebuildFailedKeepsOld(t *testing.T) {
 	dir := t.TempDir()
 	writeDoc(t, dir, "a.md", "# 甲\n内容甲。\n")

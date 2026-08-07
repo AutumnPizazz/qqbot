@@ -291,14 +291,16 @@ func (ix *Indexer) RebuildChanged(ctx context.Context, docsDir string) (Summary,
 		}
 	}
 
-	// 变化/新增文件全部嵌入成功才算成功（失败保留旧索引）
+	// 变化/新增文件嵌入（仅 vector 模式需要；keyword 模式纯文本索引，跳过嵌入）
 	newVecs := map[string][][]float32{}
-	for _, f := range order {
-		vecs, err := ix.embed.EmbedTexts(ctx, textsOf(toEmbed[f]))
-		if err != nil {
-			return sum, fmt.Errorf("嵌入 %s 失败: %w", f, err)
+	if ix.Mode() == "vector" {
+		for _, f := range order {
+			vecs, err := ix.embed.EmbedTexts(ctx, textsOf(toEmbed[f]))
+			if err != nil {
+				return sum, fmt.Errorf("嵌入 %s 失败: %w", f, err)
+			}
+			newVecs[f] = vecs
 		}
-		newVecs[f] = vecs
 	}
 
 	// 组装新条目：未变文件保留旧条目；变化/新增用新条目；已删除文件丢弃
@@ -317,7 +319,11 @@ func (ix *Indexer) RebuildChanged(ctx context.Context, docsDir string) (Summary,
 	}
 	for _, f := range order {
 		for i, c := range toEmbed[f] {
-			entries = append(entries, IndexEntry{Chunk: c, Vec: newVecs[f][i]})
+			var vec []float32
+			if ix.Mode() == "vector" {
+				vec = newVecs[f][i]
+			}
+			entries = append(entries, IndexEntry{Chunk: c, Vec: vec})
 		}
 	}
 

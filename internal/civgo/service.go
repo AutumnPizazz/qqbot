@@ -345,7 +345,15 @@ func (s *Service) embedRecoverLoop(ctx context.Context) {
 			cancel()
 			if err == nil {
 				s.index.SetMode("vector")
-				slog.Info("civgo 嵌入自检恢复，回切 vector 检索")
+				slog.Info("civgo 嵌入自检恢复，回切 vector 检索（触发全量重建）")
+				// keyword 期间构建的索引没有向量，回切后必须全量重建
+				go func() {
+					cfg := s.store.Get()
+					docsDir := filepath.Join(s.dataDir, "civgo", "repo", cfg.Repo.DocsPath)
+					if _, rerr := s.index.RebuildAll(context.Background(), docsDir); rerr != nil {
+						slog.Warn("civgo 回切 vector 重建索引失败", "err", rerr)
+					}
+				}()
 			}
 		}
 	}
