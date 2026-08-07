@@ -314,12 +314,17 @@ func TestSyncSparseCheckout(t *testing.T) {
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("sparse 同步失败: %v", err)
 	}
-	// 目标目录存在
+	// 精确 sparse：工作树只含 docs/game_content（根文件/同级文件/兄弟目录都不应出现）
 	if _, err := os.Stat(filepath.Join(syn.repoDir, "docs", "game_content", "archer.md")); err != nil {
 		t.Fatalf("sparse 后目标文档缺失: %v", err)
 	}
-	// cone 模式：兄弟目录应被排除（docs/other_dir；docs/ 下同级文件与根文件会被包含，属 git 预期行为）
-	if _, err := os.Stat(filepath.Join(syn.repoDir, "docs", "other_dir", "x.md")); err == nil {
-		t.Error("sparse 模式下 docs/other_dir/x.md 不应出现在工作树")
+	for _, unwanted := range []string{
+		"README.md",
+		"docs/other.md",
+		"docs/other_dir/x.md",
+	} {
+		if _, err := os.Stat(filepath.Join(syn.repoDir, unwanted)); err == nil {
+			t.Errorf("精确 sparse 下 %s 不应出现在工作树", unwanted)
+		}
 	}
 }

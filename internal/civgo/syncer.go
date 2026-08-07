@@ -190,11 +190,18 @@ func (s *Syncer) clone(ctx context.Context, cfg *Config, branch string) error {
 		return fmt.Errorf("clone 失败: %w", err)
 	}
 	if cfg.Repo.SparseCheckout {
-		if _, _, err := s.git(ctx, s.repoDir, "sparse-checkout", "init", "--cone"); err != nil {
+		// 非 cone 精确模式：只检出 docs 目录（cone 模式会附带根文件与同级文件）。
+		// 模式文件直接写入 .git/info/sparse-checkout 再 reapply，
+		// 避免不同平台对命令行路径参数的处理差异（如 Windows MSYS 路径转换）。
+		if _, _, err := s.git(ctx, s.repoDir, "sparse-checkout", "init", "--no-cone"); err != nil {
 			return fmt.Errorf("sparse-checkout init 失败: %w", err)
 		}
-		if _, _, err := s.git(ctx, s.repoDir, "sparse-checkout", "set", cfg.Repo.DocsPath); err != nil {
-			return fmt.Errorf("sparse-checkout set 失败: %w", err)
+		pattern := "/" + strings.Trim(strings.TrimPrefix(cfg.Repo.DocsPath, "/"), "/") + "/\n"
+		if err := os.WriteFile(filepath.Join(s.repoDir, ".git", "info", "sparse-checkout"), []byte(pattern), 0o644); err != nil {
+			return fmt.Errorf("写入 sparse-checkout 模式失败: %w", err)
+		}
+		if _, _, err := s.git(ctx, s.repoDir, "sparse-checkout", "reapply"); err != nil {
+			return fmt.Errorf("sparse-checkout reapply 失败: %w", err)
 		}
 	}
 	return nil
