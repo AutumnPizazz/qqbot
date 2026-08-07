@@ -723,3 +723,22 @@ docker logs -f qqbot | grep civgo        # 期望：clone/sparse 完成 → 索�
 | Dockerfile | 不改 | **apt 追加 git**（容器无 git 二进制，同步必需） |
 | 分块重叠 | chunk_overlap 生效 | 首版按行整行切块（标题先行），overlap 预留 |
 | 新增 | — | 完整类型签名、协议样例、测试清单、实现顺序、降级总表 |
+
+---
+
+### 附录 B：实现记录（cg0.0.2 ~ cg0.0.8）
+
+实现已完成并全量测试通过（`go test ./...` 9 包全绿、`go test -race ./internal/civgo` 通过、
+`go vet ./...` 无告警）。与规格书的偏差与补充：
+
+| 项 | 说明 |
+|---|---|
+| 接口抽象 | `ChatClient` 抽象为 `ChatCompleter`、`Indexer` 嵌入依赖抽象为 `Embedder`、`Options.Manager` 为 `Sender + Registerer` 聚合接口（onebot.Manager 编译期断言满足）——均为了测试注入 fake |
+| 同步器 FETCH_HEAD | 浅克隆 fetch 后本地 HEAD 不自动前进，变化检测与 LastHead 记录一律基于 `FETCH_HEAD`（初版误用 HEAD，测试暴露后修复） |
+| remote set-url | 每轮 fetch 前先 `git remote set-url origin <配置URL>`（幂等），使 repo.url 配置变更即时生效 |
+| 索引重建 | 删除文件时其条目同步清除；Save 时填充 VecB64（初版遗漏导致持久化向量为空，往返测试暴露）；嵌入失败整体原子保留旧索引 |
+| keyword 检索 | 不应用向量 min_score（分数尺度不同）；CJK 二元分词注意 `unicode.IsLetter` 对汉字亦为 true，需先判 `isCJK` |
+| sparse cone 行为 | cone 模式会包含中间目录（docs/）的同级**文件**、只排除兄弟**目录**——git 预期行为，不影响 docs_path 内容完整性 |
+| 真实仓库验证 | `github.com/AutumnPizazz/civgo` 可匿名 clone；`docs/game_content` 存在，15 个 .md 共 157KB；按 800 字符分块得 214 块（12_远古内容落表.md 46 块最大）——暴力线性检索毫秒级，嵌入成本极低 |
+| smoke 测试 | `internal/civgo/smoke_test.go` 用真实文档样本回归分块（testdata 不入库，缺失时自动 skip） |
+| 邮件提醒 | 本轮未遇到需要用户介入的阻塞问题，未触发邮件提醒流程 |
