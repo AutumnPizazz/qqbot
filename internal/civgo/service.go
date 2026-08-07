@@ -307,17 +307,18 @@ func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
 	}
 }
 
-// topicHints 从命中文档提取可深入提问的话题（标题优先，回退清理后的文件名），
-// 去重、最多 MaxTopicHints 个；索引文件已不进检索，天然不会出现。
+// topicHints 从命中文档提取可深入提问的**游戏概念**话题：
+// 标题优先，清理序号前缀后仍不合规则（过短/文档性词汇）则回退文件名；
+// 去重、最多 MaxTopicHints 个。索引文件已不进检索，天然不会出现。
 func topicHints(hits []Hit) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, h := range hits {
-		t := strings.TrimSpace(h.Chunk.Heading)
-		if t == "" {
-			t = cleanTopicName(h.Chunk.File)
+		t := cleanTopic(h.Chunk.Heading)
+		if !validTopic(t) {
+			t = cleanTopic(cleanTopicName(h.Chunk.File))
 		}
-		if t == "" || seen[t] {
+		if !validTopic(t) || seen[t] {
 			continue
 		}
 		seen[t] = true
@@ -327,6 +328,31 @@ func topicHints(hits []Hit) []string {
 		}
 	}
 	return out
+}
+
+// validTopic 判断话题是否值得展示：非空、至少 2 个字符、不含文档性词汇。
+func validTopic(t string) bool {
+	if runeLen(t) < 2 {
+		return false
+	}
+	lower := strings.ToLower(t)
+	if strings.Contains(lower, "索引") || strings.Contains(lower, "index") ||
+		strings.Contains(lower, "阅读顺序") || strings.Contains(lower, "规则归属") ||
+		strings.Contains(lower, "目录") {
+		return false
+	}
+	return true
+}
+
+// ordinalRe 匹配标题序号前缀：数字/中文数字 + 分隔符（如 "六、" "1. " "三）" "(2) "）。
+// 分隔符必选，避免误伤 "二战" "数值" 等含数字的正常词汇。
+var ordinalRe = regexp.MustCompile(`^[（(]?[0-9一二三四五六七八九十百千]+[、.．:：)）]+\s*`)
+
+// cleanTopic 清理话题文本：去序号前缀、去 markdown 残留。
+func cleanTopic(s string) string {
+	s = ordinalRe.ReplaceAllString(s, "")
+	// 去 markdown 残留与空白
+	return strings.Trim(strings.TrimSpace(s), "#*` \t")
 }
 
 // cleanTopicName 文件名转话题名：去扩展名、去数字序号前缀（如 "04_建筑系统.md" → "建筑系统"）。

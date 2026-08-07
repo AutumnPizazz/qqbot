@@ -392,6 +392,18 @@ func TestTopicHints(t *testing.T) {
 			{Chunk: Chunk{File: "c.md", Heading: "骑士", Text: "x"}},
 			{Chunk: Chunk{File: "d.md", Heading: "法师", Text: "x"}},
 		}, "弓手、骑士、法师"},
+		{"中文序号剥离", []Hit{
+			{Chunk: Chunk{File: "02_地图与城市.md", Heading: "六、初始建筑", Text: "x"}},
+			{Chunk: Chunk{File: "01_总体规则.md", Heading: "1. 游戏目标", Text: "x"}},
+		}, "初始建筑、游戏目标"},
+		{"文档性词汇过滤+回退", []Hit{
+			{Chunk: Chunk{File: "07_战争与战棋.md", Heading: "civgo 游戏内容文档索引", Text: "x"}},
+			{Chunk: Chunk{File: "01_总体规则.md", Heading: "阅读顺序", Text: "x"}},
+		}, "战争与战棋、总体规则"},
+		{"短标题过滤+回退", []Hit{
+			{Chunk: Chunk{File: "03_数值框架.md", Heading: "六", Text: "x"}},
+			{Chunk: Chunk{File: "04_建筑系统.md", Heading: "初始建筑", Text: "x"}},
+		}, "数值框架、初始建筑"},
 		{"空命中", nil, ""},
 	}
 	for _, tc := range cases {
@@ -401,6 +413,22 @@ func TestTopicHints(t *testing.T) {
 				t.Errorf("topicHints = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCleanTopic(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"六、初始建筑", "初始建筑"},
+		{"1. 游戏目标", "游戏目标"},
+		{"三）资源", "资源"},
+		{"(2) 单位", "单位"},
+		{"初始建筑", "初始建筑"},
+		{"  ## 标题  ", "标题"},
+	}
+	for _, tc := range cases {
+		if got := cleanTopic(tc.in); got != tc.want {
+			t.Errorf("cleanTopic(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

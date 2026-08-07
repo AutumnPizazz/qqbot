@@ -369,7 +369,7 @@ func TestSendAnswerSplits(t *testing.T) {
 	m := onebotMsg(111, 1001)
 	// 长回答分条发送
 	long := strings.Repeat("很长很长的回答内容，", 400) // ~4000+ 字符
-	s.sendAnswer(m, long, []Hit{{Chunk: Chunk{File: "a.md", Text: "x"}, Score: 1}})
+	s.sendAnswer(m, long, []Hit{{Chunk: Chunk{File: "04_建筑系统.md", Text: "x"}, Score: 1}})
 	if mgr.count() < 2 {
 		t.Fatalf("长回答应分多条发送，got %d", mgr.count())
 	}
