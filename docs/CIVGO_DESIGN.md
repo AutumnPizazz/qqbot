@@ -738,7 +738,8 @@ docker logs -f qqbot | grep civgo        # 期望：clone/sparse 完成 → 索�
 | remote set-url | 每轮 fetch 前先 `git remote set-url origin <配置URL>`（幂等），使 repo.url 配置变更即时生效 |
 | 索引重建 | 删除文件时其条目同步清除；Save 时填充 VecB64（初版遗漏导致持久化向量为空，往返测试暴露）；嵌入失败整体原子保留旧索引 |
 | keyword 检索 | 不应用向量 min_score（分数尺度不同）；CJK 二元分词注意 `unicode.IsLetter` 对汉字亦为 true，需先判 `isCJK` |
-| sparse cone 行为 | cone 模式会包含中间目录（docs/）的同级**文件**、只排除兄弟**目录**——git 预期行为，不影响 docs_path 内容完整性 |
+| sparse 精确模式 | cg0.0.10 起改用**非 cone 模式**：直接写 `.git/info/sparse-checkout` 模式文件（`/docs/game_content/`）再 `reapply`，工作树**只含目标目录**（cone 会附带根文件与同级文件；写文件而非传参绕开 Windows MSYS 路径转换坑）。实测：全量 clone .git 568K/工作树 1.8M → 精确 sparse 仅 386K（含 .git 194K，工作树恰好 15 个文档） |
+| 默认分支实测 | civgo 仓库默认分支为 **`stable`**（非 main）；配置 branch 留空时由 `ls-remote --symref` 自动探测，无需手动指定 |
 | 真实仓库验证 | `github.com/AutumnPizazz/civgo` 可匿名 clone；`docs/game_content` 存在，15 个 .md 共 157KB；按 800 字符分块得 214 块（12_远古内容落表.md 46 块最大）——暴力线性检索毫秒级，嵌入成本极低 |
 | smoke 测试 | `internal/civgo/smoke_test.go` 用真实文档样本回归分块（testdata 不入库，缺失时自动 skip） |
 | 邮件提醒 | 本轮未遇到需要用户介入的阻塞问题，未触发邮件提醒流程 |
