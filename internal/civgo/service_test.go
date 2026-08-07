@@ -239,17 +239,43 @@ func TestOnMessageConcurrencyLimit(t *testing.T) {
 	}
 }
 
+// TestNoHitCallsAI 无命中时仍调用 AI 一次（处理闲聊/自我介绍/换说法）。
+func TestNoHitCallsAI(t *testing.T) {
+	s, mgr, _ := testService(t)
+	s.chat = &fixedChat{answer: "我是 civgo 游戏助手，只回答游戏内容相关的问题～"}
+	// 空索引 → 无命中 → 走 AI
+	s.index = NewIndexer(&countEmbed{EmbedClient: NewEmbedClient(testAIConfig()), n: &atomic.Int64{}},
+		t.TempDir()+"/i.json", DefaultConfig().Retrieval)
+	if err := s.OnMessage(msg(111, 1001, 999, "你是谁")); err != nil {
+		t.Fatal(err)
+	}
+	waitReply(t, mgr, 1)
+	if !strings.Contains(mgr.lastSent(), "civgo 游戏助手") {
+		t.Errorf("无命中应调 AI 回答，got: %s", mgr.lastSent())
+	}
+	// 无命中 + AI 失败 → 友好提示
+	s.chat = &fixedChat{err: fmt.Errorf("mock 失败")}
+	if err := s.OnMessage(msg(111, 1001, 999, "你是谁")); err != nil {
+		t.Fatal(err)
+	}
+	waitReply(t, mgr, 2)
+	if !strings.Contains(mgr.lastSent(), "不可用") {
+		t.Errorf("无命中且 AI 失败应提示不可用，got: %s", mgr.lastSent())
+	}
+}
+
+// TestNoHitReply 无命中场景下不再有“未找到”话术（由 AI 接管）。
 func TestNoHitReply(t *testing.T) {
 	s, mgr, _ := testService(t)
-	// 空索引 → 无命中提示
+	s.chat = &fixedChat{answer: "知识库暂无相关内容"}
 	s.index = NewIndexer(&countEmbed{EmbedClient: NewEmbedClient(testAIConfig()), n: &atomic.Int64{}},
 		t.TempDir()+"/i.json", DefaultConfig().Retrieval)
 	if err := s.OnMessage(msg(111, 1001, 999, "完全无关的话题词")); err != nil {
 		t.Fatal(err)
 	}
 	waitReply(t, mgr, 1)
-	if !strings.Contains(mgr.lastSent(), "未找到") {
-		t.Errorf("无命中应提示未找到: %s", mgr.lastSent())
+	if !strings.Contains(mgr.lastSent(), "知识库暂无相关内容") {
+		t.Errorf("无命中应由 AI 回答: %s", mgr.lastSent())
 	}
 }
 

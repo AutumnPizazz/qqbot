@@ -207,7 +207,21 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 		}
 	}
 	if len(hits) == 0 {
-		s.reply(m, "📚 知识库中暂未找到与「"+truncateRunes(q, 30)+"」相关的内容。换个说法试试？也可以等游戏文档更新后再问～")
+		// 无命中：仍调 AI 一次（不带文档上下文），处理闲聊/自我介绍/换说法等场景。
+		// systemPrompt 规则保证：游戏相关问题 AI 会如实说“文档中未找到”，
+		// 无关问题会礼貌说明身份，不会瞎编。
+		answer, usage, err := s.chat.Complete(ctx, systemPrompt,
+			"", q+"\n\n（提示：知识库中未检索到相关内容；若问题与游戏相关请建议换个说法，若与游戏无关请按规则处理）")
+		if err != nil {
+			slog.Warn("civgo AI 调用失败（无命中场景）", "err", err, "ms", time.Since(start).Milliseconds())
+			s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
+			return
+		}
+		s.sendAnswer(m, answer, nil)
+		slog.Info("civgo 问答完成（无命中）", "group", m.GroupID, "user", m.UserID,
+			"q", truncateRunes(q, 50), "hits", 0,
+			"in_tok", usage.InputTokens, "out_tok", usage.OutputTokens,
+			"ms", time.Since(start).Milliseconds())
 		return
 	}
 
@@ -249,12 +263,15 @@ func buildDocContext(hits []Hit, maxChars int) string {
 	return sb.String()
 }
 
+// MaxSourceFiles 回复末尾来源列表的最大文件数（答案内 AI 已自行引用出处，列表仅作补充）。
+const MaxSourceFiles = 3
+
 // sendAnswer 组装回复并分条发送（单条 ≤ DefaultMaxReplyLen，最多 5 条）。
 func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
-	sources := make([]string, 0, 5)
+	sources := make([]string, 0, MaxSourceFiles)
 	seen := map[string]bool{}
 	for _, h := range hits {
-		if len(sources) >= 5 {
+		if len(sources) >= MaxSourceFiles {
 			break
 		}
 		if !seen[h.Chunk.File] {
