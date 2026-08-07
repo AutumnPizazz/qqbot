@@ -362,6 +362,39 @@ func TestSyncStatePersist(t *testing.T) {
 	}
 }
 
+// TestSyncRebuildAfterIndexLost 模拟「LastHead 已推进但索引从未成功构建」
+// （如首次 clone 后建索引失败，或索引文件丢失）：即使远端无新提交也必须重建索引。
+func TestSyncRebuildAfterIndexLost(t *testing.T) {
+	remote := setupRemote(t)
+	syn, ix, _, _ := testSyncer(t, remote)
+	if err := syn.syncOnce(context.Background()); err != nil {
+		t.Fatalf("首次同步失败: %v", err)
+	}
+	// 模拟索引丢失（entries 清空），同时 state 里 LastIndexAt 清零（从未成功建过索引）
+	ix.mu.Lock()
+	ix.entries = nil
+	ix.hashes = map[string]string{}
+	ix.mu.Unlock()
+	st := syn.loadState()
+	st.LastIndexAt = time.Time{}
+	st.LastIndexSum = ""
+	syn.saveState(st)
+
+	// 再次同步：远端无新提交，但索引必须被重建
+	if err := syn.syncOnce(context.Background()); err != nil {
+		t.Fatalf("重建同步失败: %v", err)
+	}
+	ix.mu.RLock()
+	n := len(ix.entries)
+	ix.mu.RUnlock()
+	if n < 1 {
+		t.Fatalf("索引应被重建，got %d 条", n)
+	}
+	if syn.loadState().LastIndexSum == "" {
+		t.Error("重建后 LastIndexSum 应非空")
+	}
+}
+
 func TestSyncSparseCheckout(t *testing.T) {
 	remote := setupRemote(t)
 	cfg := DefaultConfig()

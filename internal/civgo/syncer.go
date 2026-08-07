@@ -138,12 +138,13 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 		return s.fail(err)
 	}
 	st := s.loadState()
-	if st.LastHead == head {
+	indexReady := !st.LastIndexAt.IsZero()
+	if st.LastHead == head && indexReady {
 		st.LastSyncAt = time.Now()
 		st.FailCount = 0
 		st.LastError = ""
 		s.saveState(st)
-		return nil // 远端无新提交，轻量返回
+		return nil // 远端无新提交且索引已构建，轻量返回
 	}
 
 	// 检测 docs_path 是否有提交变化（双保险：LastHead 变化但可能只改了 docs 之外）
@@ -151,14 +152,17 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 	if err != nil {
 		return s.fail(err)
 	}
-	if strings.TrimSpace(out) == "" {
+	if strings.TrimSpace(out) == "" && indexReady {
+		// docs 无变化且索引已构建：仅推进 LastHead
 		st.LastHead = head
 		st.LastSyncAt = time.Now()
 		st.FailCount = 0
 		st.LastError = ""
 		s.saveState(st)
-		return nil // docs 无变化，仅推进 LastHead
+		return nil
 	}
+	// 注意：docs 无变化但索引未构建（如首次 clone 后建索引失败、或索引文件丢失）时
+	// 必须走 merge + indexAndRecord 重建索引，不能轻量返回。
 
 	// 快进合并；本地被意外修改导致冲突时 reset 后重试一次
 	if _, _, err := s.git(ctx, s.repoDir, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
