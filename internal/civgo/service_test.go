@@ -162,8 +162,12 @@ func TestOnMessageBasicFlow(t *testing.T) {
 	if n := strings.Count(reply, "[CQ:at,qq=1001]"); n != 1 {
 		t.Errorf("@ 应恰好 1 次（SendGroupMsgAt 自动生成），got %d: %s", n, reply)
 	}
-	if !strings.Contains(reply, "📄") || !strings.Contains(reply, "archer.md") {
-		t.Errorf("应附来源: %s", reply)
+	// 末尾为话题提示（不再有 📄 文件列表；AI 文内引用出处是规则要求的合法行为）
+	if !strings.Contains(reply, "💡 可以继续问：") {
+		t.Errorf("应附话题提示: %s", reply)
+	}
+	if strings.Contains(reply, "📄") {
+		t.Errorf("不应出现文件列表: %s", reply)
 	}
 }
 
@@ -380,10 +384,10 @@ func TestSendAnswerSplits(t *testing.T) {
 			t.Errorf("第 %d 条不应重复 @: %s", i+1, all[i][:30])
 		}
 	}
-	// 末条附来源
+	// 末条附话题提示
 	last := all[len(all)-1]
-	if !strings.Contains(last, "📄 a.md") {
-		t.Errorf("末条应附来源: %s", last[:50])
+	if !strings.Contains(last, "💡 可以继续问：") {
+		t.Errorf("末条应附话题提示: %s", last[:50])
 	}
 }
 

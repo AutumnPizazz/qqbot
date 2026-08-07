@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -207,11 +208,15 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 		}
 	}
 	if len(hits) == 0 {
-		// 无命中：仍调 AI 一次（不带文档上下文），处理闲聊/自我介绍/换说法等场景。
+		// 无命中：仍调 AI 一次（仅带通用游戏常识），处理闲聊/自我介绍/换说法等场景。
 		// systemPrompt 规则保证：游戏相关问题 AI 会如实说“文档中未找到”，
 		// 无关问题会礼貌说明身份，不会瞎编。
+		docContext := ""
+		if general := s.loadGeneralContext(cfg); general != "" {
+			docContext = "【通用游戏常识】\n" + general
+		}
 		answer, usage, err := s.chat.Complete(ctx, systemPrompt,
-			"", q+"\n\n（提示：知识库中未检索到相关内容；若问题与游戏相关请建议换个说法，若与游戏无关请按规则处理）")
+			docContext, q+"\n\n（提示：知识库中未检索到相关内容；若问题与游戏相关请建议换个说法，若与游戏无关请按规则处理）")
 		if err != nil {
 			slog.Warn("civgo AI 调用失败（无命中场景）", "err", err, "ms", time.Since(start).Milliseconds())
 			s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
@@ -225,7 +230,11 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 		return
 	}
 
+	// 通用游戏常识（来自索引文档）+ 检索命中的相关片段
 	docContext := buildDocContext(hits, cfg.Retrieval.MaxContextChars)
+	if general := s.loadGeneralContext(cfg); general != "" {
+		docContext = "【通用游戏常识】\n" + general + "\n\n" + docContext
+	}
 	answer, usage, err := s.chat.Complete(ctx, systemPrompt, docContext, q)
 	if err != nil {
 		slog.Warn("civgo AI 调用失败", "err", err, "ms", time.Since(start).Milliseconds())
@@ -263,25 +272,18 @@ func buildDocContext(hits []Hit, maxChars int) string {
 	return sb.String()
 }
 
-// MaxSourceFiles 回复末尾来源列表的最大文件数（答案内 AI 已自行引用出处，列表仅作补充）。
-const MaxSourceFiles = 3
+// MaxSourceFiles 回复末尾话题提示的最大数量（不再展示文件列表，
+// 来源由 AI 按规则在文内标注，末尾改为可深入提问的话题关键词）。
+const MaxTopicHints = 3
+
+// maxGeneralContextChars 通用游戏常识（索引文档内容）注入上限。
+const maxGeneralContextChars = 3000
 
 // sendAnswer 组装回复并分条发送（单条 ≤ DefaultMaxReplyLen，最多 5 条）。
 func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
-	sources := make([]string, 0, MaxSourceFiles)
-	seen := map[string]bool{}
-	for _, h := range hits {
-		if len(sources) >= MaxSourceFiles {
-			break
-		}
-		if !seen[h.Chunk.File] {
-			seen[h.Chunk.File] = true
-			sources = append(sources, h.Chunk.File)
-		}
-	}
 	tail := ""
-	if len(sources) > 0 {
-		tail = "\n\n📄 " + strings.Join(sources, "、")
+	if topics := topicHints(hits); len(topics) > 0 {
+		tail = "\n\n💡 可以继续问：" + strings.Join(topics, "、")
 	}
 	// SendGroupMsgAt 内部自动加 [CQ:at,qq=<uid>] 前缀（仅首条 @，后续条纯文本）
 	parts := splitReply(answer, tail)
@@ -303,6 +305,76 @@ func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
 			slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
 		}
 	}
+}
+
+// topicHints 从命中文档提取可深入提问的话题（标题优先，回退清理后的文件名），
+// 去重、最多 MaxTopicHints 个；索引文件已不进检索，天然不会出现。
+func topicHints(hits []Hit) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range hits {
+		t := strings.TrimSpace(h.Chunk.Heading)
+		if t == "" {
+			t = cleanTopicName(h.Chunk.File)
+		}
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+		if len(out) >= MaxTopicHints {
+			break
+		}
+	}
+	return out
+}
+
+// cleanTopicName 文件名转话题名：去扩展名、去数字序号前缀（如 "04_建筑系统.md" → "建筑系统"）。
+func cleanTopicName(file string) string {
+	base := filepath.Base(file)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	if i := strings.Index(base, "_"); i > 0 && isAllDigits(base[:i]) {
+		base = base[i+1:]
+	}
+	return strings.TrimSpace(base)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// loadGeneralContext 读取索引类文档内容作为通用游戏常识（每次问答读取，
+// 文件很小且受限流保护；repo 未就绪时返回空串）。
+func (s *Service) loadGeneralContext(cfg *Config) string {
+	dir := filepath.Join(s.dataDir, "civgo", "repo", cfg.Repo.DocsPath)
+	files, err := scanDocs(dir)
+	if err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, f := range files {
+		if !isIndexFile(f) {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			continue
+		}
+		sb.Write(content)
+		sb.WriteString("\n\n")
+	}
+	if sb.Len() == 0 {
+		return ""
+	}
+	return truncateRunes(sb.String(), maxGeneralContextChars)
 }
 
 // splitReply 把长回答切成 ≤ DefaultMaxReplyLen 的片段（优先按段落，最多 5 条）。

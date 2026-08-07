@@ -262,6 +262,9 @@ func (ix *Indexer) RebuildChanged(ctx context.Context, docsDir string) (Summary,
 	order := []string{}
 
 	for _, f := range files {
+		if isIndexFile(f) {
+			continue // 索引文件不进检索索引（其内容作为通用上下文由 Service 注入）
+		}
 		content, err := os.ReadFile(filepath.Join(docsDir, f))
 		if err != nil {
 			slog.Warn("civgo 读取文档失败（跳过）", "file", f, "err", err)
@@ -358,6 +361,14 @@ func (ix *Indexer) RebuildAll(ctx context.Context, docsDir string) (Summary, err
 	ix.hashes = map[string]string{}
 	ix.mu.Unlock()
 	return ix.RebuildChanged(ctx, docsDir)
+}
+
+// isIndexFile 判断是否为索引类文档（文件名含「索引」或 index）。
+// 这类文件描述的是文档结构而非游戏内容：不进检索索引、不显示为来源，
+// 其内容由 Service 作为通用游戏常识注入每次对话。
+func isIndexFile(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return strings.Contains(base, "索引") || strings.Contains(base, "index")
 }
 
 // scanDocs 递归扫描目录下的支持类型文件，返回相对路径列表（排除隐藏文件）。
