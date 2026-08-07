@@ -35,6 +35,11 @@ func runGit(t *testing.T, dir string, args ...string) string {
 
 // setupRemote 建一个带 docs/game_content 初始提交的本地 bare 仓库，返回其路径。
 func setupRemote(t *testing.T) string {
+	return setupRemoteBranch(t, "main")
+}
+
+// setupRemoteBranch 同 setupRemote，但可指定默认分支名。
+func setupRemoteBranch(t *testing.T, branch string) string {
 	t.Helper()
 	gitAvailable(t)
 	work := filepath.Join(t.TempDir(), "work")
@@ -44,14 +49,14 @@ func setupRemote(t *testing.T) string {
 	mustWrite(t, filepath.Join(work, "docs", "other.md"), "docs 下的其他文件\n")
 	mustWrite(t, filepath.Join(work, "docs", "other_dir", "x.md"), "docs 下其他目录\n")
 	mustWrite(t, filepath.Join(work, "README.md"), "civgo")
-	runGit(t, work, "init", "-b", "main")
+	runGit(t, work, "init", "-b", branch)
 	runGit(t, work, "add", ".")
 	runGit(t, work, "-c", "user.name=test", "-c", "user.email=t@t", "commit", "-m", "init")
 	runGit(t, "", "init", "--bare", bare)
 	runGit(t, work, "remote", "add", "origin", bare)
-	runGit(t, work, "push", "origin", "main")
-	// bare 仓库 HEAD 指向 main（默认指向不存在的 master，会导致 clone 无法 checkout）
-	runGit(t, bare, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, work, "push", "origin", branch)
+	// bare 仓库 HEAD 指向目标分支（默认指向不存在的 master，会导致 clone 无法 checkout）
+	runGit(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+branch)
 	return bare
 }
 
@@ -81,13 +86,18 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
-// testSyncer 构造一个使用 fake 嵌入的 Syncer + Indexer + Store。
+// testSyncer 构造一个使用 fake 嵌入的 Syncer + Indexer + Store（默认 main 分支）。
 func testSyncer(t *testing.T, repoURL string) (*Syncer, *Indexer, *Store, string) {
+	return testSyncerBranch(t, repoURL, "main")
+}
+
+// testSyncerBranch 同 testSyncer，可指定分支名（空 = 自动探测）。
+func testSyncerBranch(t *testing.T, repoURL, branch string) (*Syncer, *Indexer, *Store, string) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.AI.APIKey = "sk-test"
 	cfg.Repo.URL = repoURL
-	cfg.Repo.Branch = "main"
+	cfg.Repo.Branch = branch
 	store := &Store{}
 	store.cfgPtr.Store(cfg)
 
@@ -280,6 +290,61 @@ func TestBranchAutoDetect(t *testing.T) {
 	}
 	if branch != "main" {
 		t.Errorf("应探测到 main，got %s", branch)
+	}
+}
+
+// TestBranchAutoDetectStable civgo 仓库实测默认分支为 stable（非 main）：
+// 分支留空自动探测 → 应选 stable 并完成首次同步全流程。
+func TestBranchAutoDetectStable(t *testing.T) {
+	remote := setupRemoteBranch(t, "stable")
+	ctx := context.Background()
+	syn, ix, _, _ := testSyncerBranch(t, remote, "") // 分支留空 → 自动探测
+
+	branch, err := syn.detectDefaultBranch(ctx, remote)
+	if err != nil {
+		t.Fatalf("探测分支失败: %v", err)
+	}
+	if branch != "stable" {
+		t.Fatalf("应探测到 stable，got %s", branch)
+	}
+	// 全流程：首次同步（内部用探测到的分支 clone）
+	if err := syn.syncOnce(ctx); err != nil {
+		t.Fatalf("stable 仓库首次同步失败: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(syn.repoDir, "docs", "game_content", "archer.md"))
+	if err != nil {
+		t.Fatalf("clone 后文档缺失: %v", err)
+	}
+	if !strings.Contains(string(data), "弓手") {
+		t.Errorf("文档内容错误: %s", data)
+	}
+	ix.mu.RLock()
+	n := len(ix.entries)
+	ix.mu.RUnlock()
+	if n < 1 {
+		t.Errorf("索引应有条目，got %d", n)
+	}
+}
+
+// TestBranchAutoDetectBrokenHead 远端 HEAD 指向已删除分支（bare 仓库常见坑）：
+// 应跳过不存在的 HEAD 指向，按优先级选择实际存在的分支。
+func TestBranchAutoDetectBrokenHead(t *testing.T) {
+	remote := setupRemoteBranch(t, "stable")
+	// 把 bare HEAD 故意指向不存在的 master
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/master")
+	ctx := context.Background()
+	syn, _, _, _ := testSyncerBranch(t, remote, "")
+
+	branch, err := syn.detectDefaultBranch(ctx, remote)
+	if err != nil {
+		t.Fatalf("探测分支失败: %v", err)
+	}
+	if branch != "stable" {
+		t.Errorf("HEAD 指向失效时应回退到实际分支 stable，got %s", branch)
+	}
+	// 且全流程同步仍应成功
+	if err := syn.syncOnce(ctx); err != nil {
+		t.Fatalf("broken HEAD 下同步失败: %v", err)
 	}
 }
 

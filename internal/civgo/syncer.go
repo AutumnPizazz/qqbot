@@ -207,22 +207,54 @@ func (s *Syncer) clone(ctx context.Context, cfg *Config, branch string) error {
 	return nil
 }
 
-// detectDefaultBranch 通过 ls-remote --symref 探测远端默认分支。
+// detectDefaultBranch 探测远端默认分支：
+// 1. 列出全部分支集合；
+// 2. 解析 --symref HEAD 指向，若该分支存在则采用；
+// 3. HEAD 指向的分支不存在（已删除）时按优先级 main > master > stable 选择；
+// 4. 单分支仓库直接采用唯一分支。
 func (s *Syncer) detectDefaultBranch(ctx context.Context, url string) (string, error) {
-	out, _, err := s.git(ctx, "", "ls-remote", "--symref", url, "HEAD")
-	if err != nil {
+	branches := map[string]bool{}
+	order := []string{}
+	if out, _, err := s.git(ctx, "", "ls-remote", "--heads", url); err != nil {
 		return "", err
-	}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ref:") && strings.HasSuffix(line, "HEAD") {
+	} else {
+		for _, line := range strings.Split(out, "\n") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				return strings.TrimPrefix(fields[1], "refs/heads/"), nil
+			if len(fields) == 2 && strings.HasPrefix(fields[1], "refs/heads/") {
+				name := strings.TrimPrefix(fields[1], "refs/heads/")
+				if !branches[name] {
+					branches[name] = true
+					order = append(order, name)
+				}
 			}
 		}
 	}
-	return "main", nil // 兜底
+	// HEAD 指向优先（需真实存在）
+	if out, _, err := s.git(ctx, "", "ls-remote", "--symref", url, "HEAD"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "ref:") && strings.HasSuffix(line, "HEAD") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					name := strings.TrimPrefix(fields[1], "refs/heads/")
+					if branches[name] {
+						return name, nil
+					}
+				}
+			}
+		}
+	}
+	// HEAD 指向的分支不存在：按常见优先级兜底
+	for _, cand := range []string{"main", "master", "stable"} {
+		if branches[cand] {
+			return cand, nil
+		}
+	}
+	// 单分支仓库
+	if len(order) == 1 {
+		return order[0], nil
+	}
+	return "", fmt.Errorf("无法探测远端默认分支（远端分支: %v）", order)
 }
 
 // gitHead 解析仓库中指定引用（HEAD 或 FETCH_HEAD）的 commit hash。

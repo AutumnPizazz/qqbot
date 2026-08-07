@@ -227,16 +227,18 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 // buildDocContext 把检索命中块拼成知识源文本（按分数降序，累计不超过上限）。
 func buildDocContext(hits []Hit, maxChars int) string {
 	var sb strings.Builder
+	total := 0
 	for _, h := range hits {
 		head := ""
 		if h.Chunk.Heading != "" {
 			head = " §" + h.Chunk.Heading
 		}
 		block := fmt.Sprintf("【来源: %s%s】\n%s\n\n", h.Chunk.File, head, h.Chunk.Text)
-		if sb.Len()+runeLen(block) > maxChars {
+		if total+runeLen(block) > maxChars {
 			break
 		}
 		sb.WriteString(block)
+		total += runeLen(block)
 	}
 	if sb.Len() == 0 && len(hits) > 0 {
 		// 单块就超限：取第一块截断
