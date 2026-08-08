@@ -132,7 +132,8 @@ func TestValidateErrors(t *testing.T) {
 			}
 			if !contains(err.Error(), tc.want) {
 				t.Errorf("错误信息应包含 %q，got %v", tc.want, err)
-			}		})
+			}
+		})
 	}
 }
 

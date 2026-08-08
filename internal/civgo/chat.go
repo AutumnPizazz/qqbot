@@ -208,8 +208,8 @@ func (c *ChatClient) SelfCheckTools(ctx context.Context) (bool, error) {
 			"description": "自检工具",
 			"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 		}},
-		"tool_choice":      "auto",
-		"store":            false,
+		"tool_choice":       "auto",
+		"store":             false,
 		"max_output_tokens": 16,
 	}
 	body, err := json.Marshal(payload)

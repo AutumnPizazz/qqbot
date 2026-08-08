@@ -16,15 +16,15 @@ const usageTopN = 5
 // （邮件发送由 main 注入的 mailer.Sender 承担，本模块零 SMTP 实现）。
 type UsageMeter struct {
 	mu       sync.Mutex
-	buckets  map[int64]int64 // unix 分钟 → tokens（in+out 合计）
-	groupUse map[int64]int64 // 窗口内按群累计
-	userUse  map[int64]int64 // 窗口内按用户累计
-	requests int             // 窗口内请求次数
-	lastSend time.Time       // 上次预警时间（冷却）
-	sending  bool            // 预警邮件发送中（防并发重复触发）
-	cfg      func() *Config  // 热重载快照
+	buckets  map[int64]int64                      // unix 分钟 → tokens（in+out 合计）
+	groupUse map[int64]int64                      // 窗口内按群累计
+	userUse  map[int64]int64                      // 窗口内按用户累计
+	requests int                                  // 窗口内请求次数
+	lastSend time.Time                            // 上次预警时间（冷却）
+	sending  bool                                 // 预警邮件发送中（防并发重复触发）
+	cfg      func() *Config                       // 热重载快照
 	send     func(to, subject, body string) error // 注入的邮件发送（nil = 未注入）
-	defTo    string          // 默认收件人（main 注入，来自系统邮箱配置）
+	defTo    string                               // 默认收件人（main 注入，来自系统邮箱配置）
 }
 
 // NewUsageMeter 创建计量器。send 为 nil 时不预警（仅计量）。

@@ -17,7 +17,7 @@ const listDocsMaxLines = 60
 type ToolExecutor struct {
 	docmap  *DocmapStore
 	docsDir string
-	history *HistoryStore // 可空（未启用时 recall_history 返回提示）
+	history *HistoryStore  // 可空（未启用时 recall_history 返回提示）
 	cfg     func() *Config // 热重载快照
 }
 

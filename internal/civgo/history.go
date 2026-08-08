@@ -15,8 +15,8 @@ import (
 
 // 历史条目截断上限。
 const (
-	historyQuestionMax = 100 // 问题截断字数
-	historyAnswerMax   = 300 // 回答截断字数
+	historyQuestionMax = 100  // 问题截断字数
+	historyAnswerMax   = 300  // 回答截断字数
 	historyRecallChars = 2500 // 单次召回输出总字符上限
 )
 
@@ -33,8 +33,8 @@ type HistoryEntry struct {
 type HistoryStore struct {
 	mu     sync.Mutex
 	groups map[int64][]HistoryEntry
-	dir    string            // 持久化目录（空 = 不持久化）
-	cfg    func() *Config    // 热重载快照
+	dir    string         // 持久化目录（空 = 不持久化）
+	cfg    func() *Config // 热重载快照
 }
 
 // NewHistoryStore 创建历史存储并载入既有持久化数据（损坏行跳过，不阻断）。

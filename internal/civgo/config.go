@@ -94,19 +94,19 @@ type AgentConfig struct {
 
 // HistoryConfig 群问答历史（AI 决策召回）配置。
 type HistoryConfig struct {
-	Enabled            bool `json:"enabled"`              // 默认 true
+	Enabled            bool `json:"enabled"`               // 默认 true
 	MaxEntriesPerGroup int  `json:"max_entries_per_group"` // 每群环形缓冲上限（10~200，默认 50）
-	Persist            bool `json:"persist"`              // 持久化到 data/civgo/history/<group>.jsonl
+	Persist            bool `json:"persist"`               // 持久化到 data/civgo/history/<group>.jsonl
 	MaxRecallEntries   int  `json:"max_recall_entries"`    // 单次召回条数上限（1~10，默认 5）
 }
 
 // UsageAlertConfig token 用量预警配置（窗口内超阈值发邮件提醒）。
 type UsageAlertConfig struct {
-	Enabled         bool   `json:"enabled"`           // 默认 true
-	WindowMinutes   int    `json:"window_minutes"`    // 滑动窗口分钟数（1~120，默认 5）
-	ThresholdTokens int64  `json:"threshold_tokens"`  // 窗口内 input+output 合计触发阈值（≥1000，默认 500000）
-	CooldownMinutes int    `json:"cooldown_minutes"`  // 冷却分钟数（1~1440，默认 30）
-	EmailTo         string `json:"email_to"`          // 收件人；空 = 回退 main 注入的默认收件人
+	Enabled         bool   `json:"enabled"`          // 默认 true
+	WindowMinutes   int    `json:"window_minutes"`   // 滑动窗口分钟数（1~120，默认 5）
+	ThresholdTokens int64  `json:"threshold_tokens"` // 窗口内 input+output 合计触发阈值（≥1000，默认 500000）
+	CooldownMinutes int    `json:"cooldown_minutes"` // 冷却分钟数（1~1440，默认 30）
+	EmailTo         string `json:"email_to"`         // 收件人；空 = 回退 main 注入的默认收件人
 }
 
 // RateLimitConfig 问答限流配置。

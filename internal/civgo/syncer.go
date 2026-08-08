@@ -16,12 +16,12 @@ import (
 
 // SyncState 同步状态（data/civgo/state.json）。
 type SyncState struct {
-	LastHead     string    `json:"last_head"`  // 上次已同步的远端 commit
-	LastSyncAt   time.Time `json:"last_sync_at"`
-	LastError    string    `json:"last_error,omitempty"`
-	FailCount    int       `json:"fail_count"`
-	LastDocmapAt time.Time `json:"last_docmap_at"`  // 文档地图最近更新时间
-	LastDocmapSum string   `json:"last_docmap_sum"` // 例如 "files=12"
+	LastHead      string    `json:"last_head"` // 上次已同步的远端 commit
+	LastSyncAt    time.Time `json:"last_sync_at"`
+	LastError     string    `json:"last_error,omitempty"`
+	FailCount     int       `json:"fail_count"`
+	LastDocmapAt  time.Time `json:"last_docmap_at"`  // 文档地图最近更新时间
+	LastDocmapSum string    `json:"last_docmap_sum"` // 例如 "files=12"
 }
 
 // gitCommandTimeout 单条 git 命令超时（服务器访问 GitHub 不稳定时防止悬挂）。

@@ -544,7 +544,23 @@ OnMessage（不变：@检测 → 问题清理/截断 → 限流 → 并发信号
 > 说明：cg0.1.3~cg0.1.7 提交间允许临时编译不过（分步迁移），但**每步对应测试通过**；
 > cg0.1.8 结束时整体必须全绿。
 
-## 15. 风险与对策
+## 15. 实施状态（cg0.1.8 收尾记录）
+
+| 提交 | 状态 |
+|---|---|
+| cg0.1.1 计划书 | ✅ |
+| cg0.1.2 网关 function calling 验证 | ✅ 协议层+自检+模拟网关测试；**真实网关验证待部署**（启动自检自动判定，日志见 §6.3） |
+| cg0.1.3 文档地图 | ✅ docmap.json 增量重建，同步器 docmap 化 |
+| cg0.1.4 agent 循环与文档工具 | ✅ tools.go/agent.go，问答已走 agent 链路 |
+| cg0.1.5 群历史与 AI 决策召回 | ✅ history.go + recall_history 工具 |
+| cg0.1.6 token 计量与邮件预警 | ✅ usage.go + main.go SMTP 注入（复用 mailer 包） |
+| cg0.1.7 删除向量检索残留 | ✅ embed/index/chunk 移除，共享函数迁 util.go，index.json 启动清理 |
+| cg0.1.8 测试补全与冒烟 | ✅ 全量 go test ./... + go vet ./... 绿；真实文档冒烟（15 文件/195 标题）通过 |
+
+真实冒烟复现：`git clone --depth 1 https://github.com/AutumnPizazz/civgo.git` 后把
+`docs/game_content/*` 拷入 `internal/civgo/testdata/`，运行 `go test ./internal/civgo/ -run TestSmokeRealDocs -v`。
+
+## 16. 风险与对策
 
 | 风险 | 对策 |
 |---|---|

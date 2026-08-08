@@ -1,5 +1,10 @@
 # Civgo 社区服务实施规格书（dev_civgo 分支专项）
 
+> ⚠️ **本规格书已部分废弃（2026-08 起）**：向量检索体系（§7 分块器、§8 嵌入与向量索引、§9 检索编排）
+> 已被 [CIVGO_AGENT_DESIGN.md](./CIVGO_AGENT_DESIGN.md) 的 AI 自主检索（function calling 工具循环）取代。
+> 仍有效部分：§5 配置框架、§6 文档同步器、§10 限流、§12 测试要点（对应实现已随 agent 化改造调整）。
+> 实施以 CIVGO_AGENT_DESIGN.md 为准。
+
 > **给实现者的开场白**：本文档是一份可直接照做的实施规格。开新窗口时：
 > 1. 通读本文档（重点：§2 决策、§3 接入点、§4 文件清单、§5~§10 各模块规格、§12 实现顺序）；
 > 2. 前置阅读仓库文件：`main.go`（接入点）、`internal/onebot/manager.go`（`On`/`SendGroupMsgAt`）、

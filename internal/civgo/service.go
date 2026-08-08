@@ -56,9 +56,9 @@ type ChatCompleter interface {
 type Service struct {
 	store   *Store
 	docmap  *DocmapStore
-	agent   *Agent // AI 自主检索代理（工具循环）
+	agent   *Agent        // AI 自主检索代理（工具循环）
 	history *HistoryStore // 群问答历史（AI 决策召回）
-	meter   *UsageMeter // token 用量计量与预警
+	meter   *UsageMeter   // token 用量计量与预警
 	mgr     Manager
 	rl      *rateLimiter
 	sem     chan struct{} // AI 并发信号量

@@ -155,7 +155,7 @@ func TestUsageMeterWindowSliding(t *testing.T) {
 	send := func(to, subject, body string) error { return nil }
 	m := NewUsageMeter(func() *Config { return cfg }, send, "")
 	// 写入 5 分钟前的过期桶
-	old := time.Now().Add(-10 * time.Minute).Unix() / 60
+	old := time.Now().Add(-10*time.Minute).Unix() / 60
 	m.mu.Lock()
 	m.buckets[old] = 9999
 	m.mu.Unlock()
