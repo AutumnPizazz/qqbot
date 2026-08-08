@@ -38,6 +38,21 @@ const (
 	maxMaxOutputTokens = 8192
 	minContextChars    = 1000
 	maxContextChars    = 100000
+	minMaxToolCalls    = 1
+	maxMaxToolCalls    = 30
+	minReadPageLines   = 10
+	maxReadPageLines   = 1000
+	minReadPageChars   = 1000
+	maxReadPageChars   = 30000
+	minHistoryEntries  = 10
+	maxHistoryEntries  = 200
+	minRecallEntries   = 1
+	maxRecallEntries   = 10
+	minWindowMinutes   = 1
+	maxWindowMinutes   = 120
+	minThresholdTokens = 1000
+	minCooldownMinutes = 1
+	maxCooldownMinutes = 1440
 	// DefaultMaxReplyLen 单条群消息安全长度上限（QQ 群消息 + CQ at 码余量）。
 	DefaultMaxReplyLen = 3500
 	// DefaultMaxQuestionLen 单次提问最大字符数（超出截断）。
@@ -46,12 +61,15 @@ const (
 
 // Config civgo 服务配置（data/civgo/civgo.json）。
 type Config struct {
-	Enabled   bool            `json:"enabled"`
-	Repo      RepoConfig      `json:"repo"`
-	AI        AIConfig        `json:"ai"`
-	Retrieval RetrievalConfig `json:"retrieval"`
-	Groups    []int64         `json:"groups"`
-	RateLimit RateLimitConfig `json:"rate_limit"`
+	Enabled    bool            `json:"enabled"`
+	Repo       RepoConfig      `json:"repo"`
+	AI         AIConfig        `json:"ai"`
+	Retrieval  RetrievalConfig `json:"retrieval"` // 已废弃（agent 化改造后不再使用，保留字段兼容旧配置）
+	Agent      AgentConfig     `json:"agent"`
+	History    HistoryConfig   `json:"history"`
+	UsageAlert UsageAlertConfig `json:"usage_alert"`
+	Groups     []int64         `json:"groups"`
+	RateLimit  RateLimitConfig `json:"rate_limit"`
 }
 
 // RepoConfig 文档仓库配置。
@@ -83,6 +101,31 @@ type RetrievalConfig struct {
 	ChunkOverlap    int     `json:"chunk_overlap"` // 预留（首版按行整行切块）
 	MinScore        float64 `json:"min_score"`
 	MaxContextChars int     `json:"max_context_chars"`
+}
+
+// AgentConfig AI 自主检索（function calling 工具循环）配置。
+type AgentConfig struct {
+	MaxToolCalls     int `json:"max_tool_calls"`      // 单次提问工具调用次数上限（1~30，默认 8）
+	MaxContextChars  int `json:"max_context_chars"`   // 累计读入文档上下文上限（1000~100000，默认 12000）
+	ReadPageLines    int `json:"read_page_lines"`     // read_doc 单次读取行数（10~1000，默认 200）
+	ReadPageMaxChars int `json:"read_page_max_chars"` // read_doc 单次读取字符上限（1000~30000，默认 8000）
+}
+
+// HistoryConfig 群问答历史（AI 决策召回）配置。
+type HistoryConfig struct {
+	Enabled            bool `json:"enabled"`              // 默认 true
+	MaxEntriesPerGroup int  `json:"max_entries_per_group"` // 每群环形缓冲上限（10~200，默认 50）
+	Persist            bool `json:"persist"`              // 持久化到 data/civgo/history/<group>.jsonl
+	MaxRecallEntries   int  `json:"max_recall_entries"`    // 单次召回条数上限（1~10，默认 5）
+}
+
+// UsageAlertConfig token 用量预警配置（窗口内超阈值发邮件提醒）。
+type UsageAlertConfig struct {
+	Enabled         bool   `json:"enabled"`           // 默认 true
+	WindowMinutes   int    `json:"window_minutes"`    // 滑动窗口分钟数（1~120，默认 5）
+	ThresholdTokens int64  `json:"threshold_tokens"`  // 窗口内 input+output 合计触发阈值（≥1000，默认 500000）
+	CooldownMinutes int    `json:"cooldown_minutes"`  // 冷却分钟数（1~1440，默认 30）
+	EmailTo         string `json:"email_to"`          // 收件人；空 = 回退 main 注入的默认收件人
 }
 
 // RateLimitConfig 问答限流配置。
@@ -120,6 +163,24 @@ func DefaultConfig() *Config {
 			ChunkOverlap:    100,
 			MinScore:        0.25,
 			MaxContextChars: 12000,
+		},
+		Agent: AgentConfig{
+			MaxToolCalls:     8,
+			MaxContextChars:  12000,
+			ReadPageLines:    200,
+			ReadPageMaxChars: 8000,
+		},
+		History: HistoryConfig{
+			Enabled:            true,
+			MaxEntriesPerGroup: 50,
+			Persist:            true,
+			MaxRecallEntries:   5,
+		},
+		UsageAlert: UsageAlertConfig{
+			Enabled:         true,
+			WindowMinutes:   5,
+			ThresholdTokens: 500000,
+			CooldownMinutes: 30,
 		},
 		Groups: []int64{},
 		RateLimit: RateLimitConfig{
@@ -227,6 +288,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Retrieval.MaxContextChars < minContextChars || c.Retrieval.MaxContextChars > maxContextChars {
 		return fmt.Errorf("retrieval.max_context_chars 必须在 %d~%d 之间", minContextChars, maxContextChars)
+	}
+	if c.Agent.MaxToolCalls < minMaxToolCalls || c.Agent.MaxToolCalls > maxMaxToolCalls {
+		return fmt.Errorf("agent.max_tool_calls 必须在 %d~%d 之间", minMaxToolCalls, maxMaxToolCalls)
+	}
+	if c.Agent.MaxContextChars < minContextChars || c.Agent.MaxContextChars > maxContextChars {
+		return fmt.Errorf("agent.max_context_chars 必须在 %d~%d 之间", minContextChars, maxContextChars)
+	}
+	if c.Agent.ReadPageLines < minReadPageLines || c.Agent.ReadPageLines > maxReadPageLines {
+		return fmt.Errorf("agent.read_page_lines 必须在 %d~%d 之间", minReadPageLines, maxReadPageLines)
+	}
+	if c.Agent.ReadPageMaxChars < minReadPageChars || c.Agent.ReadPageMaxChars > maxReadPageChars {
+		return fmt.Errorf("agent.read_page_max_chars 必须在 %d~%d 之间", minReadPageChars, maxReadPageChars)
+	}
+	if c.History.MaxEntriesPerGroup < minHistoryEntries || c.History.MaxEntriesPerGroup > maxHistoryEntries {
+		return fmt.Errorf("history.max_entries_per_group 必须在 %d~%d 之间", minHistoryEntries, maxHistoryEntries)
+	}
+	if c.History.MaxRecallEntries < minRecallEntries || c.History.MaxRecallEntries > maxRecallEntries {
+		return fmt.Errorf("history.max_recall_entries 必须在 %d~%d 之间", minRecallEntries, maxRecallEntries)
+	}
+	if c.UsageAlert.WindowMinutes < minWindowMinutes || c.UsageAlert.WindowMinutes > maxWindowMinutes {
+		return fmt.Errorf("usage_alert.window_minutes 必须在 %d~%d 之间", minWindowMinutes, maxWindowMinutes)
+	}
+	if c.UsageAlert.ThresholdTokens < minThresholdTokens {
+		return fmt.Errorf("usage_alert.threshold_tokens 必须 ≥ %d", minThresholdTokens)
+	}
+	if c.UsageAlert.CooldownMinutes < minCooldownMinutes || c.UsageAlert.CooldownMinutes > maxCooldownMinutes {
+		return fmt.Errorf("usage_alert.cooldown_minutes 必须在 %d~%d 之间", minCooldownMinutes, maxCooldownMinutes)
 	}
 	if c.RateLimit.PerUserMin < 1 || c.RateLimit.PerGroupMin < 1 || c.RateLimit.MaxConcurrentAI < 1 {
 		return errors.New("rate_limit 各项必须 ≥ 1")

@@ -30,6 +30,15 @@ func TestDefaultConfig(t *testing.T) {
 	if c.Retrieval.Mode != "vector" || c.Retrieval.TopK != 6 {
 		t.Errorf("retrieval 默认值错误: %+v", c.Retrieval)
 	}
+	if c.Agent.MaxToolCalls != 8 || c.Agent.MaxContextChars != 12000 {
+		t.Errorf("agent 默认值错误: %+v", c.Agent)
+	}
+	if !c.History.Enabled || c.History.MaxEntriesPerGroup != 50 {
+		t.Errorf("history 默认值错误: %+v", c.History)
+	}
+	if !c.UsageAlert.Enabled || c.UsageAlert.WindowMinutes != 5 || c.UsageAlert.ThresholdTokens != 500000 {
+		t.Errorf("usage_alert 默认值错误: %+v", c.UsageAlert)
+	}
 }
 
 func TestLoadMissingCreatesTemplate(t *testing.T) {
@@ -109,6 +118,15 @@ func TestValidateErrors(t *testing.T) {
 		{"mode 非法", func(c *Config) { c.Retrieval.Mode = "hybrid" }, "retrieval.mode"},
 		{"per_user > per_group", func(c *Config) { c.RateLimit.PerUserMin = 20 }, "per_user_min"},
 		{"并发为 0", func(c *Config) { c.RateLimit.MaxConcurrentAI = 0 }, "rate_limit"},
+		{"max_tool_calls 越界", func(c *Config) { c.Agent.MaxToolCalls = 0 }, "max_tool_calls"},
+		{"max_context_chars 越界", func(c *Config) { c.Agent.MaxContextChars = 100 }, "max_context_chars"},
+		{"read_page_lines 越界", func(c *Config) { c.Agent.ReadPageLines = 5 }, "read_page_lines"},
+		{"read_page_max_chars 越界", func(c *Config) { c.Agent.ReadPageMaxChars = 100 }, "read_page_max_chars"},
+		{"history 容量越界", func(c *Config) { c.History.MaxEntriesPerGroup = 500 }, "max_entries_per_group"},
+		{"recall 条数越界", func(c *Config) { c.History.MaxRecallEntries = 0 }, "max_recall_entries"},
+		{"窗口分钟越界", func(c *Config) { c.UsageAlert.WindowMinutes = 0 }, "window_minutes"},
+		{"阈值过小", func(c *Config) { c.UsageAlert.ThresholdTokens = 10 }, "threshold_tokens"},
+		{"冷却越界", func(c *Config) { c.UsageAlert.CooldownMinutes = 0 }, "cooldown_minutes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

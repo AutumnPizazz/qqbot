@@ -50,10 +50,11 @@ type ChatCompleter interface {
 }
 
 // Service civgo 社区服务聚合：独立 message handler（与规则引擎并行）、
-// 文档同步、向量检索、AI 问答、限流。
+// 文档同步、文档地图（AI 自主检索）、AI 问答（function calling）、限流。
 type Service struct {
 	store   *Store
-	index   *Indexer
+	index   *Indexer // 已废弃：向量索引（过渡期保留，cg0.1.7 移除）
+	docmap  *DocmapStore
 	chat    ChatCompleter
 	embed   *EmbedClient
 	mgr     Manager
@@ -81,6 +82,7 @@ func New(opts Options) (*Service, error) {
 	embed := NewEmbedClient(cfg.AI)
 	index := NewIndexer(embed, filepath.Join(opts.DataDir, "civgo", "index.json"), cfg.Retrieval)
 	index.Load()
+	docmap := NewDocmapStore(filepath.Join(opts.DataDir, "civgo", "docmap.json"))
 
 	chat := NewChatClient(cfg.AI)
 	// function calling 自检：网关明确不支持（4xx）→ 模块禁用并明确报告；
@@ -107,6 +109,7 @@ func New(opts Options) (*Service, error) {
 	return &Service{
 		store:   store,
 		index:   index,
+		docmap:  docmap,
 		chat:    chat,
 		embed:   embed,
 		mgr:     opts.Manager,
@@ -118,7 +121,7 @@ func New(opts Options) (*Service, error) {
 
 // Start 注册消息 handler 并启动同步/自检恢复 goroutine。
 func (s *Service) Start(ctx context.Context) {
-	syncer := NewSyncer(s.store, s.index, s.dataDir)
+	syncer := NewSyncer(s.store, s.index, s.docmap, s.dataDir)
 	go syncer.Run(ctx)
 	go s.embedRecoverLoop(ctx)
 	s.mgr.On("message", s.OnMessage)

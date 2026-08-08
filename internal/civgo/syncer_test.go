@@ -86,7 +86,7 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
-// testSyncer 构造一个使用 fake 嵌入的 Syncer + Indexer + Store（默认 main 分支）。
+// testSyncer 构造一个使用 fake 嵌入的 Syncer + Indexer + Store + DocmapStore（默认 main 分支）。
 func testSyncer(t *testing.T, repoURL string) (*Syncer, *Indexer, *Store, string) {
 	return testSyncerBranch(t, repoURL, "main")
 }
@@ -106,7 +106,8 @@ func testSyncerBranch(t *testing.T, repoURL, branch string) (*Syncer, *Indexer, 
 	dataDir := t.TempDir()
 	ix := NewIndexer(ce, filepath.Join(dataDir, "civgo", "index.json"), cfg.Retrieval)
 	ix.Load()
-	return NewSyncer(store, ix, dataDir), ix, store, dataDir
+	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
+	return NewSyncer(store, ix, dm, dataDir), ix, store, dataDir
 }
 
 func TestSyncFirstCloneAndIndex(t *testing.T) {
@@ -128,10 +129,19 @@ func TestSyncFirstCloneAndIndex(t *testing.T) {
 	if st.LastHead == "" {
 		t.Error("LastHead 应为非空")
 	}
-	if st.LastIndexSum == "" {
-		t.Error("LastIndexSum 应为非空")
+	if st.LastDocmapSum == "" {
+		t.Error("LastDocmapSum 应为非空")
 	}
-	// 索引就绪
+	// 文档地图就绪：archer.md 入图且带大纲
+	dm := syn.docmap.Get()
+	f, ok := dm.Files["archer.md"]
+	if !ok {
+		t.Fatalf("docmap 应包含 archer.md，got %v", dm.Files)
+	}
+	if len(f.Headings) == 0 || f.Headings[0].Text != "弓手" {
+		t.Errorf("archer.md 大纲错误: %+v", f.Headings)
+	}
+	// 索引就绪（过渡期仍在建）
 	ix.mu.RLock()
 	n := len(ix.entries)
 	ix.mu.RUnlock()
@@ -174,12 +184,16 @@ func TestSyncNoChangeSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := syn.loadState().LastHead
+	dmAt := syn.loadState().LastDocmapAt
 	time.Sleep(50 * time.Millisecond)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("无变化同步不应失败: %v", err)
 	}
 	if syn.loadState().LastHead != head {
 		t.Error("无变化时 LastHead 不应改变")
+	}
+	if syn.loadState().LastDocmapAt != dmAt {
+		t.Error("无变化时 LastDocmapAt 不应改变")
 	}
 	if syn.loadState().FailCount != 0 {
 		t.Error("无变化不应计失败")
@@ -354,11 +368,15 @@ func TestSyncStatePersist(t *testing.T) {
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// 新实例读取同一 state.json
-	syn2 := NewSyncer(syn.store, nil, dataDir)
+	// 新实例读取同一 state.json / docmap.json
+	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
+	syn2 := NewSyncer(syn.store, nil, dm, dataDir)
 	st := syn2.loadState()
-	if st.LastHead == "" || st.LastIndexSum == "" {
+	if st.LastHead == "" || st.LastDocmapSum == "" {
 		t.Errorf("状态持久化不完整: %+v", st)
+	}
+	if len(dm.Get().Files) < 1 {
+		t.Error("docmap 持久化缺失")
 	}
 }
 
@@ -384,36 +402,30 @@ func TestSyncBranchLocalAfterClone(t *testing.T) {
 	}
 }
 
-// TestSyncRebuildAfterIndexLost 模拟「LastHead 已推进但索引从未成功构建」
-// （如首次 clone 后建索引失败，或索引文件丢失）：即使远端无新提交也必须重建索引。
-func TestSyncRebuildAfterIndexLost(t *testing.T) {
+// TestSyncRebuildAfterDocmapLost 模拟「LastHead 已推进但文档地图从未成功构建」
+// （如首次 clone 后构建失败，或 docmap 文件丢失）：即使远端无新提交也必须重建。
+func TestSyncRebuildAfterDocmapLost(t *testing.T) {
 	remote := setupRemote(t)
-	syn, ix, _, _ := testSyncer(t, remote)
+	syn, _, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("首次同步失败: %v", err)
 	}
-	// 模拟索引丢失（entries 清空），同时 state 里 LastIndexAt 清零（从未成功建过索引）
-	ix.mu.Lock()
-	ix.entries = nil
-	ix.hashes = map[string]string{}
-	ix.mu.Unlock()
+	// 模拟 docmap 丢失（store 清空），同时 state 里 LastDocmapAt 清零（从未成功构建过）
+	syn.docmap.Replace(&Docmap{Version: docmapVersion, Files: map[string]DocmapFile{}})
 	st := syn.loadState()
-	st.LastIndexAt = time.Time{}
-	st.LastIndexSum = ""
+	st.LastDocmapAt = time.Time{}
+	st.LastDocmapSum = ""
 	syn.saveState(st)
 
-	// 再次同步：远端无新提交，但索引必须被重建
+	// 再次同步：远端无新提交，但文档地图必须被重建
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("重建同步失败: %v", err)
 	}
-	ix.mu.RLock()
-	n := len(ix.entries)
-	ix.mu.RUnlock()
-	if n < 1 {
-		t.Fatalf("索引应被重建，got %d 条", n)
+	if len(syn.docmap.Get().Files) < 1 {
+		t.Fatal("docmap 应被重建")
 	}
-	if syn.loadState().LastIndexSum == "" {
-		t.Error("重建后 LastIndexSum 应非空")
+	if syn.loadState().LastDocmapSum == "" {
+		t.Error("重建后 LastDocmapSum 应非空")
 	}
 }
 
@@ -430,7 +442,8 @@ func TestSyncSparseCheckout(t *testing.T) {
 	ce := &countEmbed{EmbedClient: embed, n: &atomic.Int64{}}
 	dataDir := t.TempDir()
 	ix := NewIndexer(ce, filepath.Join(dataDir, "civgo", "index.json"), cfg.Retrieval)
-	syn := NewSyncer(store, ix, dataDir)
+	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
+	syn := NewSyncer(store, ix, dm, dataDir)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("sparse 同步失败: %v", err)
 	}

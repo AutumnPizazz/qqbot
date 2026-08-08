@@ -20,28 +20,33 @@ type SyncState struct {
 	LastSyncAt   time.Time `json:"last_sync_at"`
 	LastError    string    `json:"last_error,omitempty"`
 	FailCount    int       `json:"fail_count"`
-	LastIndexAt  time.Time `json:"last_index_at"`
-	LastIndexSum string    `json:"last_index_sum"`
+	LastIndexAt  time.Time `json:"last_index_at"`    // 已废弃（向量索引移除后不再更新，保留兼容旧状态）
+	LastIndexSum string    `json:"last_index_sum"`   // 已废弃
+	LastDocmapAt  time.Time `json:"last_docmap_at"`  // 文档地图最近更新时间
+	LastDocmapSum string    `json:"last_docmap_sum"` // 例如 "files=12 headings=98"
 }
 
 // gitCommandTimeout 单条 git 命令超时（服务器访问 GitHub 不稳定时防止悬挂）。
 const gitCommandTimeout = 90 * time.Second
 
 // Syncer git 轮询同步器：首次 clone（浅 + sparse），之后定时 fetch →
-// 检测 docs_path 提交变化 → merge --ff-only → 增量重建索引。
+// 检测 docs_path 提交变化 → merge --ff-only → 更新文档地图（docmap）。
 type Syncer struct {
 	store     *Store
-	index     *Indexer
+	index     *Indexer // 已废弃：向量索引（移除后为 nil，保留字段兼容过渡）
+	docmap    *DocmapStore
 	repoDir   string
 	statePath string
 	mu        sync.Mutex // 串行化 syncOnce
 }
 
 // NewSyncer 创建同步器。git 二进制缺失由 Service.New 提前探测。
-func NewSyncer(store *Store, index *Indexer, dataDir string) *Syncer {
+// index 为已废弃的向量索引器，过渡期仍传入（保留建索引），移除后传 nil。
+func NewSyncer(store *Store, index *Indexer, docmap *DocmapStore, dataDir string) *Syncer {
 	return &Syncer{
 		store:     store,
 		index:     index,
+		docmap:    docmap,
 		repoDir:   filepath.Join(dataDir, "civgo", "repo"),
 		statePath: filepath.Join(dataDir, "civgo", "state.json"),
 	}
@@ -136,7 +141,7 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 			return s.fail(herr)
 		}
 		slog.Info("civgo 首次克隆完成", "head", shortHead(head))
-		return s.indexAndRecord(ctx, cfg, head)
+		return s.docmapAndRecord(ctx, cfg, head)
 	}
 
 	// 轮询：先对齐 remote URL（配置变更即时生效，幂等）→ fetch → 检测 → merge
@@ -152,13 +157,13 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 		return s.fail(err)
 	}
 	st := s.loadState()
-	indexReady := !st.LastIndexAt.IsZero()
-	if st.LastHead == head && indexReady {
+	docmapReady := !st.LastDocmapAt.IsZero()
+	if st.LastHead == head && docmapReady {
 		st.LastSyncAt = time.Now()
 		st.FailCount = 0
 		st.LastError = ""
 		s.saveState(st)
-		return nil // 远端无新提交且索引已构建，轻量返回
+		return nil // 远端无新提交且文档地图已构建，轻量返回
 	}
 
 	// 检测 docs_path 是否有提交变化（双保险：LastHead 变化但可能只改了 docs 之外）
@@ -166,8 +171,8 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 	if err != nil {
 		return s.fail(err)
 	}
-	if strings.TrimSpace(out) == "" && indexReady {
-		// docs 无变化且索引已构建：仅推进 LastHead
+	if strings.TrimSpace(out) == "" && docmapReady {
+		// docs 无变化且文档地图已构建：仅推进 LastHead
 		st.LastHead = head
 		st.LastSyncAt = time.Now()
 		st.FailCount = 0
@@ -175,8 +180,8 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 		s.saveState(st)
 		return nil
 	}
-	// 注意：docs 无变化但索引未构建（如首次 clone 后建索引失败、或索引文件丢失）时
-	// 必须走 merge + indexAndRecord 重建索引，不能轻量返回。
+	// 注意：docs 无变化但文档地图未构建（如首次 clone 后构建失败、或 docmap 文件丢失）时
+	// 必须走 merge + docmapAndRecord 重建，不能轻量返回。
 
 	// 快进合并；本地被意外修改导致冲突时 reset 后重试一次
 	if _, _, err := s.git(ctx, s.repoDir, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
@@ -188,7 +193,7 @@ func (s *Syncer) syncOnce(ctx context.Context) error {
 			return s.fail(fmt.Errorf("merge 重试失败: %w", err2))
 		}
 	}
-	return s.indexAndRecord(ctx, cfg, head)
+	return s.docmapAndRecord(ctx, cfg, head)
 }
 
 // clone 首次克隆（浅克隆 + 可选 sparse checkout 只取 docs 目录）。
@@ -284,25 +289,38 @@ func (s *Syncer) gitHead(ctx context.Context, ref string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// indexAndRecord 增量重建索引并落盘状态。
-func (s *Syncer) indexAndRecord(ctx context.Context, cfg *Config, head string) error {
+// docmapAndRecord 更新文档地图（+ 过渡期向量索引）并落盘状态。
+func (s *Syncer) docmapAndRecord(ctx context.Context, cfg *Config, head string) error {
 	docsDir := filepath.Join(s.repoDir, cfg.Repo.DocsPath)
-	sum, err := s.index.RebuildChanged(ctx, docsDir)
+	// 文档地图（替代向量索引，AI 检索的基础）
+	m, err := BuildDocmap(docsDir, s.docmapPath(), s.docmap.Get())
 	if err != nil {
 		return s.fail(err)
+	}
+	s.docmap.Replace(m)
+	// 过渡期：向量索引仍重建（cg0.1.7 移除）
+	if s.index != nil {
+		if _, ierr := s.index.RebuildChanged(ctx, docsDir); ierr != nil {
+			return s.fail(ierr)
+		}
 	}
 	st := s.loadState()
 	if head != "" {
 		st.LastHead = head
 	}
 	st.LastSyncAt = time.Now()
-	st.LastIndexAt = time.Now()
-	st.LastIndexSum = sum.String()
+	st.LastDocmapAt = time.Now()
+	st.LastDocmapSum = fmt.Sprintf("files=%d", len(m.Files))
 	st.FailCount = 0
 	st.LastError = ""
 	s.saveState(st)
-	slog.Info("civgo 同步完成", "head", shortHead(head), "summary", sum.String())
+	slog.Info("civgo 同步完成", "head", shortHead(head), "docmap", st.LastDocmapSum)
 	return nil
+}
+
+// docmapPath 文档地图持久化路径。
+func (s *Syncer) docmapPath() string {
+	return filepath.Join(filepath.Dir(s.statePath), "docmap.json")
 }
 
 // fail 记录失败状态（FailCount 递增、LastError）并返回错误。
