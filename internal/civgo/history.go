@@ -210,3 +210,14 @@ func (s *HistoryStore) loadAll() {
 		f.Close()
 	}
 }
+
+// Count 返回全部群的累计历史条数（管理后台状态展示）。
+func (s *HistoryStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, list := range s.groups {
+		n += len(list)
+	}
+	return n
+}

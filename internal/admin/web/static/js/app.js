@@ -147,6 +147,7 @@ function shell(content, active) {
     ["#/actions", "人工群管", "actions"],
     ["#/audit", "审计", "audit"],
     ["#/settings", "系统设置", "settings"],
+    ["#/civgo", "civgo 问答", "civgo"],
   ].map(([href, label, key]) =>
     `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`).join("");
   return `
@@ -1266,6 +1267,185 @@ function collectSystemSettings(form) {
   return sys;
 }
 
+// ---------- civgo 问答配置 ----------
+
+// civgo 配置区块渲染辅助：布尔开关、数字输入、文本输入。
+function ck(name, label, checked, extra) {
+  return `<label class="inline" style="margin:6px 0"><input type="checkbox" name="${name}" ${checked ? "checked" : ""}> ${label}</label>`;
+}
+function num(name, label, val, min, max, extra) {
+  return `<label style="width:${extra?.w || 150}px">${label}<input type="number" name="${name}" value="${val}" min="${min || 0}"${max ? ` max="${max}"` : ""}></label>`;
+}
+
+async function viewCivgo() {
+  let d;
+  try { d = await api("GET", "/api/v1/civgo"); }
+  catch (e) { toast(e.message, true); return; }
+  const c = d.config || {};
+  const st = d.status || {};
+  const notConfigured = !d.configured;
+  on(shell(`
+    <div class="content">
+      <div class="card">
+        <h2>civgo 问答服务 ${d.enabled ? `<span class="badge ok">已启用</span>` : `<span class="badge warn">${notConfigured ? "未配置" : "已停用"}</span>`}</h2>
+        ${notConfigured ? `<p class="muted" style="margin:6px 0">civgo 配置尚不存在或无效。保存后会写入 data/civgo/civgo.json；若模块未启动，<b>重启进程后生效</b>。</p>` : ""}
+        <table>
+          <tr><th>文档地图</th><td>${st.docmap_files ?? "-"} 文件 / ${st.docmap_headings ?? "-"} 标题</td></tr>
+          <tr><th>最近同步</th><td>${fmtTime(st.last_sync_at)}${st.fail_count ? ` <span class="badge bad">失败 ${st.fail_count} 次</span>` : ""}</td></tr>
+          <tr><th>同步错误</th><td class="muted">${esc(st.last_error || "-")}</td></tr>
+          <tr><th>历史记录</th><td>${st.history_total ?? "-"} 条</td></tr>
+          <tr><th>累计问答</th><td>${st.total_requests ?? "-"} 次 / ${st.total_tokens ?? "-"} tokens</td></tr>
+        </table>
+        <form data-submit="save-civgo">
+          <h3>总开关</h3>
+          ${ck("enabled", "启用 civgo 问答（群内 @ 机器人回答游戏问题）", !!c.enabled)}
+          <h3>文档仓库（git 同步）</h3>
+          <div class="row">
+            <label style="flex:2;min-width:220px">仓库 URL<input type="text" name="repo_url" value="${esc(c.repo?.url || "")}" placeholder="https://github.com/AutumnPizazz/civgo.git"></label>
+            <label>分支（留空自动探测）<input type="text" name="repo_branch" value="${esc(c.repo?.branch || "")}" placeholder="stable"></label>
+          </div>
+          <div class="row">
+            <label style="flex:2;min-width:200px">文档路径<input type="text" name="repo_docs_path" value="${esc(c.repo?.docs_path || "")}" placeholder="docs/game_content"></label>
+            ${num("repo_sync_interval_sec", "同步间隔（秒）", c.repo?.sync_interval_sec ?? 300, 30, 3600)}
+          </div>
+          ${ck("repo_clone_shallow", "浅克隆", c.repo?.clone_shallow)} ${ck("repo_sparse_checkout", "稀疏检出（只取文档目录）", c.repo?.sparse_checkout)}
+          <h3>AI 网关</h3>
+          <div class="row">
+            <label style="flex:2;min-width:220px">Base URL<input type="text" name="ai_base_url" value="${esc(c.ai?.base_url || "")}" placeholder="https://ai.realseek.wiki/v1"></label>
+            <label style="flex:1;min-width:160px">对话模型<input type="text" name="ai_chat_model" value="${esc(c.ai?.chat_model || "")}" placeholder="deepseek-v4-flash"></label>
+          </div>
+          <label>API Key
+            <input type="password" name="ai_api_key" placeholder="${c.ai?.api_key?.configured ? "已配置（留空保持不变）" : "未配置（必填）"}" autocomplete="new-password">
+          </label>
+          <div class="row">
+            <button type="button" class="secondary" data-action="clear-ai-key">清除 API Key</button>
+            <button type="button" class="secondary" data-action="test-ai">测试 AI 连接</button>
+            <span class="muted">测试会验证网关 function calling 支持（模块未启动时不可用）</span>
+          </div>
+          <div class="row">
+            ${num("ai_chat_timeout_sec", "请求超时（秒）", c.ai?.chat_timeout_sec ?? 90, 10, 600)}
+            ${num("ai_max_output_tokens", "最大输出 tokens", c.ai?.max_output_tokens ?? 2048, 100, 8192, { w: 180 })}
+          </div>
+          <h3>AI 自主检索（agent）</h3>
+          <div class="row">
+            ${num("agent_max_tool_calls", "工具调用上限", c.agent?.max_tool_calls ?? 8, 1, 30)}
+            ${num("agent_max_context_chars", "上下文预算（字）", c.agent?.max_context_chars ?? 12000, 1000, 100000, { w: 180 })}
+          </div>
+          <div class="row">
+            ${num("agent_read_page_lines", "单页行数", c.agent?.read_page_lines ?? 200, 10, 1000)}
+            ${num("agent_read_page_max_chars", "单页字符上限", c.agent?.read_page_max_chars ?? 8000, 1000, 30000, { w: 180 })}
+          </div>
+          <h3>群历史记录（AI 决策召回）</h3>
+          ${ck("history_enabled", "记录问答历史（recall_history 工具用）", !!c.history?.enabled)} ${ck("history_persist", "持久化到磁盘", !!c.history?.persist)}
+          <div class="row">
+            ${num("history_max_entries_per_group", "每群条数上限", c.history?.max_entries_per_group ?? 50, 10, 200)}
+            ${num("history_max_recall_entries", "单次召回条数", c.history?.max_recall_entries ?? 5, 1, 10)}
+          </div>
+          <h3>token 用量预警（邮件提醒）</h3>
+          ${ck("usage_alert_enabled", "启用用量预警（需 SMTP 已配置）", !!c.usage_alert?.enabled)}
+          <div class="row">
+            ${num("usage_alert_window_minutes", "窗口（分钟）", c.usage_alert?.window_minutes ?? 5, 1, 120)}
+            ${num("usage_alert_threshold_tokens", "触发阈值（tokens）", c.usage_alert?.threshold_tokens ?? 500000, 1000, 0, { w: 190 })}
+            ${num("usage_alert_cooldown_minutes", "冷却（分钟）", c.usage_alert?.cooldown_minutes ?? 30, 1, 1440)}
+          </div>
+          <label>提醒收件邮箱（留空 = 用系统邮箱收件人）<input type="text" name="usage_alert_email_to" value="${esc(c.usage_alert?.email_to || "")}" placeholder="admin@qq.com"></label>
+          <h3>启用群</h3>
+          <label>群号（逗号分隔）<input type="text" name="groups" value="${esc((c.groups || []).join(", "))}" placeholder="123456, 789012"></label>
+          <h3>限流</h3>
+          <div class="row">
+            ${num("rate_per_user_min", "每用户/分钟", c.rate_limit?.per_user_min ?? 3, 1, 60)}
+            ${num("rate_per_group_min", "每群/分钟", c.rate_limit?.per_group_min ?? 10, 1, 120)}
+            ${num("rate_max_concurrent_ai", "AI 并发上限", c.rate_limit?.max_concurrent_ai ?? 2, 1, 20)}
+          </div>
+          <div class="row" style="margin-top:16px">
+            <button type="submit">保存 civgo 配置</button>
+            <span id="civgo-msg"></span>
+          </div>
+        </form>
+      </div>
+    </div>`, "civgo"), async (action, form) => {
+    if (action === "logout") { await logout(); return; }
+    const msg = document.getElementById("civgo-msg");
+    if (action === "test-ai") {
+      msg.textContent = "测试中…";
+      try {
+        const res = await api("POST", "/api/v1/civgo/test-ai", {});
+        msg.textContent = res.ok ? `✅ ${res.detail}` : `❌ ${res.detail}`;
+      } catch (e) { msg.textContent = "❌ " + e.message; }
+      return;
+    }
+    if (action === "clear-ai-key") {
+      const cfg = collectCivgoConfig(form);
+      cfg.ai = cfg.ai || {};
+      cfg.ai.api_key = { clear: true };
+      await saveCivgo(cfg, msg);
+      return;
+    }
+    if (action === "save-civgo") {
+      await saveCivgo(collectCivgoConfig(form), msg);
+    }
+  });
+}
+
+// 收集 civgo 表单为配置对象（api_key 仅在有输入时携带）。
+function collectCivgoConfig(form) {
+  const fd = new FormData(form);
+  const n = (k, def) => { const v = Number(fd.get(k)); return Number.isFinite(v) && v > 0 ? v : def; };
+  const cfg = {
+    enabled: fd.get("enabled") === "on",
+    repo: {
+      url: fd.get("repo_url"),
+      branch: fd.get("repo_branch"),
+      docs_path: fd.get("repo_docs_path"),
+      sync_interval_sec: n("repo_sync_interval_sec", 300),
+      clone_shallow: fd.get("repo_clone_shallow") === "on",
+      sparse_checkout: fd.get("repo_sparse_checkout") === "on",
+    },
+    ai: {
+      base_url: fd.get("ai_base_url"),
+      chat_model: fd.get("ai_chat_model"),
+      chat_timeout_sec: n("ai_chat_timeout_sec", 90),
+      max_output_tokens: n("ai_max_output_tokens", 2048),
+    },
+    agent: {
+      max_tool_calls: n("agent_max_tool_calls", 8),
+      max_context_chars: n("agent_max_context_chars", 12000),
+      read_page_lines: n("agent_read_page_lines", 200),
+      read_page_max_chars: n("agent_read_page_max_chars", 8000),
+    },
+    history: {
+      enabled: fd.get("history_enabled") === "on",
+      max_entries_per_group: n("history_max_entries_per_group", 50),
+      persist: fd.get("history_persist") === "on",
+      max_recall_entries: n("history_max_recall_entries", 5),
+    },
+    usage_alert: {
+      enabled: fd.get("usage_alert_enabled") === "on",
+      window_minutes: n("usage_alert_window_minutes", 5),
+      threshold_tokens: n("usage_alert_threshold_tokens", 500000),
+      cooldown_minutes: n("usage_alert_cooldown_minutes", 30),
+      email_to: fd.get("usage_alert_email_to"),
+    },
+    groups: String(fd.get("groups") || "").split(/[,，\s]+/).map((s) => Number(s.trim())).filter((x) => Number.isFinite(x) && x > 0),
+    rate_limit: {
+      per_user_min: n("rate_per_user_min", 3),
+      per_group_min: n("rate_per_group_min", 10),
+      max_concurrent_ai: n("rate_max_concurrent_ai", 2),
+    },
+  };
+  const key = String(fd.get("ai_api_key") || "").trim();
+  if (key) cfg.ai.api_key = key;
+  return cfg;
+}
+
+async function saveCivgo(cfg, msg) {
+  try {
+    const res = await api("PUT", "/api/v1/civgo", { config: cfg });
+    msg.textContent = res.effective ? "✅ 已保存并立即生效" : "✅ 已保存（模块未启动，重启进程后生效）";
+    setTimeout(() => location.hash = "#/civgo", 600);
+  } catch (e) { msg.textContent = "❌ " + e.message; }
+}
+
 // ---------- 路由 ----------
 async function logout() {
   try { await api("POST", "/api/v1/auth/logout", {}); } catch { /* ignore */ }
@@ -1280,6 +1460,7 @@ const routes = [
   ["#/actions", viewActions],
   ["#/audit", viewAudit],
   ["#/settings", viewSettings],
+  ["#/civgo", viewCivgo],
 ];
 
 async function router() {

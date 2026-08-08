@@ -100,6 +100,9 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// civgo 配置管理适配（admin 后台读写 civgo.json）；Service 启动后由 startComponents 注入
+	civgoAdmin := civgo.NewAdmin(dataDir, nil)
+
 	adminSrv, err := admin.New(admin.Options{
 		DataDir:        dataDir,
 		Service:        svc,
@@ -110,6 +113,7 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 		RecentMessages: recentMessagesOf(b),
 		SecureCookies:  secureCookies(),
 		TrustedProxies: trustedProxies(),
+		Civgo:          civgoAdmin,
 	})
 	if err != nil {
 		slog.Error("初始化管理后台失败", "err", err)
@@ -166,6 +170,7 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 					slog.Error("civgo 模块初始化失败", "err", cerr)
 				}
 			} else {
+				civgoAdmin.SetService(cv)
 				cv.Start(ctx)
 			}
 			go func() {

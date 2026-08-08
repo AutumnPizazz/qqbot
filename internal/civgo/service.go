@@ -59,6 +59,8 @@ type Service struct {
 	agent   *Agent        // AI 自主检索代理（工具循环）
 	history *HistoryStore // 群问答历史（AI 决策召回）
 	meter   *UsageMeter   // token 用量计量与预警
+	syncer  *Syncer       // 文档同步器（Start 后非 nil，状态查询用）
+	chat    *ChatClient   // 对话客户端（管理后台 AI 自检用）
 	mgr     Manager
 	rl      *rateLimiter
 	sem     chan struct{} // AI 并发信号量
@@ -117,6 +119,7 @@ func New(opts Options) (*Service, error) {
 		agent:   agent,
 		history: history,
 		meter:   meter,
+		chat:    chat,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),
@@ -128,11 +131,60 @@ func New(opts Options) (*Service, error) {
 // Start 注册消息 handler 并启动同步/自检恢复 goroutine。
 func (s *Service) Start(ctx context.Context) {
 	syncer := NewSyncer(s.store, s.docmap, s.dataDir)
+	s.syncer = syncer
 	go syncer.Run(ctx)
 	s.mgr.On("message", s.OnMessage)
 	slog.Info("civgo 社区服务已启动",
 		"repo", s.store.Get().Repo.URL,
 		"groups", s.store.Get().Groups)
+}
+
+// Reload 强制重新加载配置（管理后台保存后调用；失败保留旧配置并返回错误）。
+func (s *Service) Reload() error {
+	return s.store.ForceReload()
+}
+
+// Status 返回运行状态（管理后台展示）。
+func (s *Service) Status() map[string]any {
+	st := map[string]any{
+		"groups":        s.store.Get().Groups,
+		"history_total": s.history.Count(),
+	}
+	if s.meter != nil {
+		st["total_requests"] = s.meter.TotalRequests()
+		st["total_tokens"] = s.meter.TotalTokens()
+	}
+	m := s.docmap.Get()
+	files := len(m.Files)
+	headings := 0
+	for _, f := range m.Files {
+		headings += len(f.Headings)
+	}
+	st["docmap_files"] = files
+	st["docmap_headings"] = headings
+	if s.syncer != nil {
+		syncSt := s.syncer.loadState()
+		st["last_sync_at"] = syncSt.LastSyncAt
+		st["last_head"] = shortHead(syncSt.LastHead)
+		st["last_error"] = syncSt.LastError
+		st["fail_count"] = syncSt.FailCount
+		st["docmap_sum"] = syncSt.LastDocmapSum
+	}
+	return st
+}
+
+// TestAI 测试 AI 网关（function calling 自检），管理后台「测试 AI 连接」用。
+func (s *Service) TestAI() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ok, err := s.chat.SelfCheckTools(ctx)
+	if err != nil {
+		if ok {
+			return fmt.Errorf("网络/服务端异常（暂不确定）: %w", err)
+		}
+		return fmt.Errorf("网关不支持 function calling: %w", err)
+	}
+	return nil
 }
 
 // ---- 事件处理 ----

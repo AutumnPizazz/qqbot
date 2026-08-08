@@ -315,3 +315,19 @@ func (s *Store) ReloadIfChanged() {
 	s.mtime = st.ModTime()
 	slog.Info("civgo 配置已热重载")
 }
+
+// ForceReload 无视 mtime 强制重载（管理后台保存后调用，即时生效）。
+// 加载/校验失败保留旧配置并返回错误（调用方决定提示方式）。
+func (s *Store) ForceReload() error {
+	cfg, err := Load(s.path)
+	if err != nil {
+		slog.Warn("civgo 配置强制重载失败（保留旧配置）", "err", err)
+		return err
+	}
+	s.cfgPtr.Store(cfg)
+	if st, err := os.Stat(s.path); err == nil {
+		s.mtime = st.ModTime()
+	}
+	slog.Info("civgo 配置已强制重载（管理后台保存）")
+	return nil
+}

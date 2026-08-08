@@ -41,6 +41,7 @@ type Options struct {
 	EmailSender    mailer.Sender                                // 邮箱验证码发送器（nil=按生效配置构建；测试注入）
 	SecureCookies  bool                                         // Cookie Secure 标志（默认 HTTPS/反代场景 true）
 	TrustedProxies []string                                     // 可信反向代理 IP（仅这些来源允许提供 X-Forwarded-For）
+	Civgo          CivgoAdmin                                   // civgo 配置管理（nil = 未接入，前端隐藏对应区块）
 }
 
 // Server 是管理后台 HTTP 服务。
@@ -193,6 +194,10 @@ func (s *Server) apiRoutes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/test-napcat", s.handleTestNapCat)
 	mux.HandleFunc("POST /api/v1/settings/test-email", s.handleTestEmail)
 	mux.HandleFunc("POST /api/v1/settings/test-watchdog", s.handleTestWatchdog)
+
+	mux.HandleFunc("GET /api/v1/civgo", s.handleGetCivgo)
+	mux.HandleFunc("PUT /api/v1/civgo", s.handlePutCivgo)
+	mux.HandleFunc("POST /api/v1/civgo/test-ai", s.handleTestCivgoAI)
 
 	mux.HandleFunc("GET /api/v1/config/history", s.handleHistory)
 	mux.HandleFunc("POST /api/v1/config/history/{revision}/restore", s.handleRestore)

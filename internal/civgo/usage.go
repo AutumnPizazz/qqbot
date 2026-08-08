@@ -22,6 +22,8 @@ type UsageMeter struct {
 	requests int                                  // 窗口内请求次数
 	lastSend time.Time                            // 上次预警时间（冷却）
 	sending  bool                                 // 预警邮件发送中（防并发重复触发）
+	totalReq int64                                // 累计请求次数（管理后台展示，不随窗口重置）
+	totalTok int64                                // 累计 token（管理后台展示，不随窗口重置）
 	cfg      func() *Config                       // 热重载快照
 	send     func(to, subject, body string) error // 注入的邮件发送（nil = 未注入）
 	defTo    string                               // 默认收件人（main 注入，来自系统邮箱配置）
@@ -53,6 +55,8 @@ func (m *UsageMeter) Add(tokens int, groupID, userID int64) {
 	m.groupUse[groupID] += int64(tokens)
 	m.userUse[userID] += int64(tokens)
 	m.requests++
+	m.totalReq++
+	m.totalTok += int64(tokens)
 	m.pruneLocked(now, window)
 	// 预警判定：启用 + 邮件通道 + 冷却期外 + 窗口超阈值 + 无发送中的邮件
 	total := m.windowTotalLocked(now, window)
@@ -76,6 +80,20 @@ func (m *UsageMeter) Add(tokens int, groupID, userID int64) {
 		return
 	}
 	m.mu.Unlock()
+}
+
+// TotalRequests 累计请求次数（不随窗口重置）。
+func (m *UsageMeter) TotalRequests() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.totalReq
+}
+
+// TotalTokens 累计消耗 token（不随窗口重置）。
+func (m *UsageMeter) TotalTokens() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.totalTok
 }
 
 // deliver 异步发送预警邮件；成功才记录冷却时间，失败不记冷却（下次满足即重发）。
