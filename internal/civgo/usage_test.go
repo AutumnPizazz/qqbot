@@ -3,86 +3,114 @@ package civgo
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// sentBox 带锁的发送记录（race 安全）。
+type sentBox struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (b *sentBox) add(s string) {
+	b.mu.Lock()
+	b.msgs = append(b.msgs, s)
+	b.mu.Unlock()
+}
+
+func (b *sentBox) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.msgs)
+}
+
+func (b *sentBox) get(i int) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if i < 0 || i >= len(b.msgs) {
+		return ""
+	}
+	return b.msgs[i]
+}
+
 // testMeter 构造计量器；send 记录发送内容。
-func testMeter(t *testing.T, send func(to, subject, body string) error) (*UsageMeter, *[]string) {
+func testMeter(t *testing.T, send func(to, subject, body string) error) (*UsageMeter, *sentBox) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.UsageAlert.WindowMinutes = 5
 	cfg.UsageAlert.ThresholdTokens = 1000
 	cfg.UsageAlert.CooldownMinutes = 30
 	cfg.UsageAlert.EmailTo = "alert@x.com"
-	var mu sync.Mutex
-	sent := []string{}
+	box := &sentBox{}
 	if send == nil {
 		send = func(to, subject, body string) error {
-			mu.Lock()
-			sent = append(sent, subject)
-			mu.Unlock()
+			box.add(subject)
 			return nil
 		}
 	}
 	m := NewUsageMeter(func() *Config { return cfg }, send, "def@x.com")
-	return m, &sent
+	return m, box
 }
 
 // waitSend 等待发送计数达到 n。
-func waitSend(t *testing.T, sent *[]string, n int) {
+func waitSend(t *testing.T, box *sentBox, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(*sent) >= n {
+		if box.count() >= n {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("等待发送超时（已有 %d 条）", len(*sent))
+	t.Fatalf("等待发送超时（已有 %d 条）", box.count())
 }
 
 func TestUsageMeterTriggerAndCooldown(t *testing.T) {
-	m, sent := testMeter(t, nil)
+	m, box := testMeter(t, nil)
 	m.Add(600, 111, 1001)
-	if len(*sent) != 0 {
+	if box.count() != 0 {
 		t.Fatal("未达阈值不应触发")
 	}
 	m.Add(500, 111, 1001) // 合计 1100 ≥ 1000 → 触发
-	waitSend(t, sent, 1)
-	if !strings.Contains((*sent)[0], "token 用量预警") {
-		t.Errorf("邮件主题错误: %s", (*sent)[0])
+	waitSend(t, box, 1)
+	if !strings.Contains(box.get(0), "token 用量预警") {
+		t.Errorf("邮件主题错误: %s", box.get(0))
 	}
 	// 冷却期内：即使再超阈值也不触发
 	m.Add(3000, 111, 1002)
 	time.Sleep(50 * time.Millisecond)
-	if len(*sent) != 1 {
-		t.Errorf("冷却期内不应重复触发，got %d", len(*sent))
+	if box.count() != 1 {
+		t.Errorf("冷却期内不应重复触发，got %d", box.count())
 	}
 	// 冷却期过后（拨回 lastSend）再触发
 	m.mu.Lock()
 	m.lastSend = time.Now().Add(-31 * time.Minute)
 	m.mu.Unlock()
 	m.Add(2000, 111, 1002)
-	waitSend(t, sent, 2)
+	waitSend(t, box, 2)
 }
 
 func TestUsageMeterWindowReset(t *testing.T) {
-	m, sent := testMeter(t, nil)
+	m, box := testMeter(t, nil)
 	m.Add(1000, 111, 1001) // 触发
-	waitSend(t, sent, 1)
+	waitSend(t, box, 1)
 	// 触发后窗口已重置：再次 Add 600 不触发（不足 1000）
 	m.Add(600, 111, 1001)
 	time.Sleep(50 * time.Millisecond)
-	if len(*sent) != 1 {
-		t.Errorf("触发后窗口应重置，got %d", len(*sent))
+	if box.count() != 1 {
+		t.Errorf("触发后窗口应重置，got %d", box.count())
 	}
 }
 
 func TestUsageMeterEmailContent(t *testing.T) {
+	var bodyMu sync.Mutex
 	var gotBody string
 	send := func(to, subject, body string) error {
+		bodyMu.Lock()
 		gotBody = body
+		bodyMu.Unlock()
 		return nil
 	}
 	m, _ := testMeter(t, send)
@@ -90,7 +118,14 @@ func TestUsageMeterEmailContent(t *testing.T) {
 	m.Add(500, 222, 2002)
 	m.Add(100, 111, 1001) // 合计 1200 ≥ 1000 → 触发
 	deadline := time.Now().Add(2 * time.Second)
-	for gotBody == "" && time.Now().Before(deadline) {
+	for {
+		bodyMu.Lock()
+		b := gotBody
+		bodyMu.Unlock()
+		if b != "" || !time.Now().Before(deadline) {
+			gotBody = b
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	if gotBody == "" {
@@ -112,30 +147,31 @@ func TestUsageMeterEmailContent(t *testing.T) {
 
 func TestUsageMeterSendFailRetry(t *testing.T) {
 	// 第一次发送失败 → 不记冷却 → 下次满足阈值重发
-	fail := true
-	var sent int
+	var fail atomic.Bool
+	fail.Store(true)
+	var sent atomic.Int64
 	send := func(to, subject, body string) error {
-		if fail {
+		if fail.Load() {
 			return errTestSMTP
 		}
-		sent++
+		sent.Add(1)
 		return nil
 	}
 	m, _ := testMeter(t, send)
 	m.Add(1000, 111, 1001)
 	time.Sleep(50 * time.Millisecond)
-	if sent != 0 {
+	if sent.Load() != 0 {
 		t.Fatal("失败时不应记发送")
 	}
 	// 失败后 sending 复位，再次满足阈值 → 重发
-	fail = false
+	fail.Store(false)
 	m.Add(1000, 111, 1001)
 	deadline := time.Now().Add(2 * time.Second)
-	for sent == 0 && time.Now().Before(deadline) {
+	for sent.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if sent != 1 {
-		t.Errorf("发送失败后应重试，got %d", sent)
+	if sent.Load() != 1 {
+		t.Errorf("发送失败后应重试，got %d", sent.Load())
 	}
 }
 
