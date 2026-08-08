@@ -356,3 +356,14 @@ func TestSelfCheckToolsUncertain(t *testing.T) {
 		t.Fatalf("5xx 应判定不确定（ok=true）: ok=%v err=%v", ok, err)
 	}
 }
+
+// testAIConfig 测试用 AI 配置（原 embed_test.go 迁入）。
+func testAIConfig() AIConfig {
+	return AIConfig{
+		BaseURL:         "https://ai.realseek.wiki/v1",
+		APIKey:          "sk-test",
+		ChatModel:       "deepseek-v4-flash",
+		ChatTimeoutSec:  30,
+		MaxOutputTokens: 2048,
+	}
+}

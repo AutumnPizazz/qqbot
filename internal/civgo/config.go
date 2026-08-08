@@ -26,14 +26,8 @@ var ErrNotConfigured = errors.New("civgo 未配置（缺失配置/缺少 api_key
 const (
 	minSyncIntervalSec = 30
 	maxSyncIntervalSec = 3600
-	minTopK            = 1
-	maxTopK            = 20
-	minChunkSize       = 200
-	maxChunkSize       = 2000
 	minChatTimeoutSec  = 10
 	maxChatTimeoutSec  = 600
-	minEmbedTimeoutSec = 5
-	maxEmbedTimeoutSec = 120
 	minMaxOutputTokens = 100
 	maxMaxOutputTokens = 8192
 	minContextChars    = 1000
@@ -61,15 +55,14 @@ const (
 
 // Config civgo 服务配置（data/civgo/civgo.json）。
 type Config struct {
-	Enabled    bool            `json:"enabled"`
-	Repo       RepoConfig      `json:"repo"`
-	AI         AIConfig        `json:"ai"`
-	Retrieval  RetrievalConfig `json:"retrieval"` // 已废弃（agent 化改造后不再使用，保留字段兼容旧配置）
-	Agent      AgentConfig     `json:"agent"`
-	History    HistoryConfig   `json:"history"`
+	Enabled    bool             `json:"enabled"`
+	Repo       RepoConfig       `json:"repo"`
+	AI         AIConfig         `json:"ai"`
+	Agent      AgentConfig      `json:"agent"`
+	History    HistoryConfig    `json:"history"`
 	UsageAlert UsageAlertConfig `json:"usage_alert"`
-	Groups     []int64         `json:"groups"`
-	RateLimit  RateLimitConfig `json:"rate_limit"`
+	Groups     []int64          `json:"groups"`
+	RateLimit  RateLimitConfig  `json:"rate_limit"`
 }
 
 // RepoConfig 文档仓库配置。
@@ -84,23 +77,11 @@ type RepoConfig struct {
 
 // AIConfig 第三方 AI 网关配置（OpenAI 兼容）。
 type AIConfig struct {
-	BaseURL         string `json:"base_url"` // 含 /v1，请求拼 /responses、/embeddings
+	BaseURL         string `json:"base_url"` // 含 /v1，请求拼 /responses
 	APIKey          string `json:"api_key"`
 	ChatModel       string `json:"chat_model"`
-	EmbeddingModel  string `json:"embedding_model"`
 	ChatTimeoutSec  int    `json:"chat_timeout_sec"`
-	EmbedTimeoutSec int    `json:"embed_timeout_sec"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
-}
-
-// RetrievalConfig 检索配置。
-type RetrievalConfig struct {
-	Mode            string  `json:"mode"` // vector（默认）| keyword
-	TopK            int     `json:"top_k"`
-	ChunkSize       int     `json:"chunk_size"`
-	ChunkOverlap    int     `json:"chunk_overlap"` // 预留（首版按行整行切块）
-	MinScore        float64 `json:"min_score"`
-	MaxContextChars int     `json:"max_context_chars"`
 }
 
 // AgentConfig AI 自主检索（function calling 工具循环）配置。
@@ -151,18 +132,8 @@ func DefaultConfig() *Config {
 			BaseURL:         "https://ai.realseek.wiki/v1",
 			APIKey:          "",
 			ChatModel:       "deepseek-v4-flash",
-			EmbeddingModel:  "bge-m3",
 			ChatTimeoutSec:  90,
-			EmbedTimeoutSec: 30,
 			MaxOutputTokens: 2048,
-		},
-		Retrieval: RetrievalConfig{
-			Mode:            "vector",
-			TopK:            6,
-			ChunkSize:       800,
-			ChunkOverlap:    100,
-			MinScore:        0.25,
-			MaxContextChars: 12000,
 		},
 		Agent: AgentConfig{
 			MaxToolCalls:     8,
@@ -259,35 +230,11 @@ func (c *Config) Validate() error {
 	if c.AI.ChatModel == "" {
 		return errors.New("ai.chat_model 不能为空")
 	}
-	if c.AI.EmbeddingModel == "" {
-		return errors.New("ai.embedding_model 不能为空")
-	}
 	if c.AI.ChatTimeoutSec < minChatTimeoutSec || c.AI.ChatTimeoutSec > maxChatTimeoutSec {
 		return fmt.Errorf("ai.chat_timeout_sec 必须在 %d~%d 之间", minChatTimeoutSec, maxChatTimeoutSec)
 	}
-	if c.AI.EmbedTimeoutSec < minEmbedTimeoutSec || c.AI.EmbedTimeoutSec > maxEmbedTimeoutSec {
-		return fmt.Errorf("ai.embed_timeout_sec 必须在 %d~%d 之间", minEmbedTimeoutSec, maxEmbedTimeoutSec)
-	}
 	if c.AI.MaxOutputTokens < minMaxOutputTokens || c.AI.MaxOutputTokens > maxMaxOutputTokens {
 		return fmt.Errorf("ai.max_output_tokens 必须在 %d~%d 之间", minMaxOutputTokens, maxMaxOutputTokens)
-	}
-	if c.Retrieval.Mode != "vector" && c.Retrieval.Mode != "keyword" {
-		return errors.New("retrieval.mode 只能是 vector 或 keyword")
-	}
-	if c.Retrieval.TopK < minTopK || c.Retrieval.TopK > maxTopK {
-		return fmt.Errorf("retrieval.top_k 必须在 %d~%d 之间", minTopK, maxTopK)
-	}
-	if c.Retrieval.ChunkSize < minChunkSize || c.Retrieval.ChunkSize > maxChunkSize {
-		return fmt.Errorf("retrieval.chunk_size 必须在 %d~%d 之间", minChunkSize, maxChunkSize)
-	}
-	if c.Retrieval.ChunkOverlap >= c.Retrieval.ChunkSize {
-		return errors.New("retrieval.chunk_overlap 必须小于 chunk_size")
-	}
-	if c.Retrieval.MinScore < 0 || c.Retrieval.MinScore > 1 {
-		return errors.New("retrieval.min_score 必须在 0~1 之间")
-	}
-	if c.Retrieval.MaxContextChars < minContextChars || c.Retrieval.MaxContextChars > maxContextChars {
-		return fmt.Errorf("retrieval.max_context_chars 必须在 %d~%d 之间", minContextChars, maxContextChars)
 	}
 	if c.Agent.MaxToolCalls < minMaxToolCalls || c.Agent.MaxToolCalls > maxMaxToolCalls {
 		return fmt.Errorf("agent.max_tool_calls 必须在 %d~%d 之间", minMaxToolCalls, maxMaxToolCalls)

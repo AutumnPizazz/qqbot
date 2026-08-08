@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -54,7 +55,6 @@ type ChatCompleter interface {
 // 文档同步、文档地图（AI 自主检索）、AI 问答（function calling）、限流。
 type Service struct {
 	store   *Store
-	index   *Indexer // 已废弃：向量索引（过渡期保留，cg0.1.7 移除）
 	docmap  *DocmapStore
 	agent   *Agent // AI 自主检索代理（工具循环）
 	history *HistoryStore // 群问答历史（AI 决策召回）
@@ -82,9 +82,13 @@ func New(opts Options) (*Service, error) {
 		return nil, ErrNotConfigured
 	}
 
-	index := NewIndexer(NewEmbedClient(cfg.AI), filepath.Join(opts.DataDir, "civgo", "index.json"), cfg.Retrieval)
-	index.Load()
 	docmap := NewDocmapStore(filepath.Join(opts.DataDir, "civgo", "docmap.json"))
+	// 清理已废弃的向量索引文件（agent 化改造后不再使用）
+	if _, serr := os.Stat(filepath.Join(opts.DataDir, "civgo", "index.json")); serr == nil {
+		if rerr := os.Remove(filepath.Join(opts.DataDir, "civgo", "index.json")); rerr == nil {
+			slog.Info("civgo 已清理废弃的向量索引文件 index.json")
+		}
+	}
 	docsDir := filepath.Join(opts.DataDir, "civgo", "repo", cfg.Repo.DocsPath)
 
 	chat := NewChatClient(cfg.AI)
@@ -109,7 +113,6 @@ func New(opts Options) (*Service, error) {
 	meter := NewUsageMeter(func() *Config { return store.Get() }, opts.SendMail, "")
 	return &Service{
 		store:   store,
-		index:   index,
 		docmap:  docmap,
 		agent:   agent,
 		history: history,
@@ -124,7 +127,7 @@ func New(opts Options) (*Service, error) {
 
 // Start 注册消息 handler 并启动同步/自检恢复 goroutine。
 func (s *Service) Start(ctx context.Context) {
-	syncer := NewSyncer(s.store, s.index, s.docmap, s.dataDir)
+	syncer := NewSyncer(s.store, s.docmap, s.dataDir)
 	go syncer.Run(ctx)
 	s.mgr.On("message", s.OnMessage)
 	slog.Info("civgo 社区服务已启动",

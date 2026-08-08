@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -86,13 +85,13 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
-// testSyncer 构造一个使用 fake 嵌入的 Syncer + Indexer + Store + DocmapStore（默认 main 分支）。
-func testSyncer(t *testing.T, repoURL string) (*Syncer, *Indexer, *Store, string) {
+// testSyncer 构造 Syncer + Store + DocmapStore（默认 main 分支）。
+func testSyncer(t *testing.T, repoURL string) (*Syncer, *Store, string) {
 	return testSyncerBranch(t, repoURL, "main")
 }
 
 // testSyncerBranch 同 testSyncer，可指定分支名（空 = 自动探测）。
-func testSyncerBranch(t *testing.T, repoURL, branch string) (*Syncer, *Indexer, *Store, string) {
+func testSyncerBranch(t *testing.T, repoURL, branch string) (*Syncer, *Store, string) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.AI.APIKey = "sk-test"
@@ -101,18 +100,14 @@ func testSyncerBranch(t *testing.T, repoURL, branch string) (*Syncer, *Indexer, 
 	store := &Store{}
 	store.cfgPtr.Store(cfg)
 
-	embed := NewEmbedClient(cfg.AI)
-	ce := &countEmbed{EmbedClient: embed, n: &atomic.Int64{}}
 	dataDir := t.TempDir()
-	ix := NewIndexer(ce, filepath.Join(dataDir, "civgo", "index.json"), cfg.Retrieval)
-	ix.Load()
 	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
-	return NewSyncer(store, ix, dm, dataDir), ix, store, dataDir
+	return NewSyncer(store, dm, dataDir), store, dataDir
 }
 
 func TestSyncFirstCloneAndIndex(t *testing.T) {
 	remote := setupRemote(t)
-	syn, ix, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("首次同步失败: %v", err)
 	}
@@ -141,20 +136,13 @@ func TestSyncFirstCloneAndIndex(t *testing.T) {
 	if len(f.Headings) == 0 || f.Headings[0].Text != "弓手" {
 		t.Errorf("archer.md 大纲错误: %+v", f.Headings)
 	}
-	// 索引就绪（过渡期仍在建）
-	ix.mu.RLock()
-	n := len(ix.entries)
-	ix.mu.RUnlock()
-	if n < 1 {
-		t.Errorf("索引应有条目，got %d", n)
-	}
 }
 
 func TestSyncDetectChange(t *testing.T) {
 	remote := setupRemote(t)
 	work := filepath.Join(t.TempDir(), "w")
 	runGit(t, "", "clone", "-q", remote, work)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +150,7 @@ func TestSyncDetectChange(t *testing.T) {
 
 	// 远端新增提交（修改 archer.md）
 	commitDoc(t, work, "docs/game_content/archer.md", "# 弓手\n弓手射程 3 格，攻击力 6。\n", "改弓手")
-	syn2, _, _, _ := testSyncer(t, remote)
+	syn2, _, _ := testSyncer(t, remote)
 	_ = syn2
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("增量同步失败: %v", err)
@@ -179,7 +167,7 @@ func TestSyncDetectChange(t *testing.T) {
 
 func TestSyncNoChangeSkipped(t *testing.T) {
 	remote := setupRemote(t)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +193,7 @@ func TestSyncDocsOnlyChange(t *testing.T) {
 	remote := setupRemote(t)
 	work := filepath.Join(t.TempDir(), "w")
 	runGit(t, "", "clone", "-q", remote, work)
-	syn, ix, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -217,11 +205,9 @@ func TestSyncDocsOnlyChange(t *testing.T) {
 	if st.LastHead == "" {
 		t.Fatal("LastHead 不应为空")
 	}
-	ix.mu.RLock()
-	n := len(ix.entries)
-	ix.mu.RUnlock()
-	if n < 1 {
-		t.Errorf("索引不应被清空，got %d", n)
+	// docmap 不应被清空
+	if len(syn.docmap.Get().Files) < 1 {
+		t.Error("docmap 不应被清空")
 	}
 }
 
@@ -229,7 +215,7 @@ func TestSyncConflictReset(t *testing.T) {
 	remote := setupRemote(t)
 	work := filepath.Join(t.TempDir(), "w")
 	runGit(t, "", "clone", "-q", remote, work)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +234,7 @@ func TestSyncConflictReset(t *testing.T) {
 
 func TestSyncFetchFailureBackoff(t *testing.T) {
 	remote := setupRemote(t)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +262,7 @@ func TestSyncFetchFailureBackoff(t *testing.T) {
 
 func TestSyncFailThenRecover(t *testing.T) {
 	remote := setupRemote(t)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +283,7 @@ func TestSyncFailThenRecover(t *testing.T) {
 func TestBranchAutoDetect(t *testing.T) {
 	remote := setupRemote(t)
 	ctx := context.Background()
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	branch, err := syn.detectDefaultBranch(ctx, remote)
 	if err != nil {
 		t.Fatalf("探测分支失败: %v", err)
@@ -312,7 +298,7 @@ func TestBranchAutoDetect(t *testing.T) {
 func TestBranchAutoDetectStable(t *testing.T) {
 	remote := setupRemoteBranch(t, "stable")
 	ctx := context.Background()
-	syn, ix, _, _ := testSyncerBranch(t, remote, "") // 分支留空 → 自动探测
+	syn, _, _ := testSyncerBranch(t, remote, "") // 分支留空 → 自动探测
 
 	branch, err := syn.detectDefaultBranch(ctx, remote)
 	if err != nil {
@@ -332,11 +318,8 @@ func TestBranchAutoDetectStable(t *testing.T) {
 	if !strings.Contains(string(data), "弓手") {
 		t.Errorf("文档内容错误: %s", data)
 	}
-	ix.mu.RLock()
-	n := len(ix.entries)
-	ix.mu.RUnlock()
-	if n < 1 {
-		t.Errorf("索引应有条目，got %d", n)
+	if len(syn.docmap.Get().Files) < 1 {
+		t.Error("docmap 应有条目")
 	}
 }
 
@@ -347,7 +330,7 @@ func TestBranchAutoDetectBrokenHead(t *testing.T) {
 	// 把 bare HEAD 故意指向不存在的 master
 	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/master")
 	ctx := context.Background()
-	syn, _, _, _ := testSyncerBranch(t, remote, "")
+	syn, _, _ := testSyncerBranch(t, remote, "")
 
 	branch, err := syn.detectDefaultBranch(ctx, remote)
 	if err != nil {
@@ -364,13 +347,13 @@ func TestBranchAutoDetectBrokenHead(t *testing.T) {
 
 func TestSyncStatePersist(t *testing.T) {
 	remote := setupRemote(t)
-	syn, _, _, dataDir := testSyncer(t, remote)
+	syn, _, dataDir := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// 新实例读取同一 state.json / docmap.json
 	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
-	syn2 := NewSyncer(syn.store, nil, dm, dataDir)
+	syn2 := NewSyncer(syn.store, dm, dataDir)
 	st := syn2.loadState()
 	if st.LastHead == "" || st.LastDocmapSum == "" {
 		t.Errorf("状态持久化不完整: %+v", st)
@@ -384,7 +367,7 @@ func TestSyncStatePersist(t *testing.T) {
 // 远端 URL 不可达时应在 fetch 阶段失败（而非卡在 ls-remote 探测）。
 func TestSyncBranchLocalAfterClone(t *testing.T) {
 	remote := setupRemoteBranch(t, "stable")
-	syn, _, _, _ := testSyncerBranch(t, remote, "") // 分支留空
+	syn, _, _ := testSyncerBranch(t, remote, "") // 分支留空
 	ctx := context.Background()
 	if err := syn.syncOnce(ctx); err != nil {
 		t.Fatalf("首次同步失败: %v", err)
@@ -406,7 +389,7 @@ func TestSyncBranchLocalAfterClone(t *testing.T) {
 // （如首次 clone 后构建失败，或 docmap 文件丢失）：即使远端无新提交也必须重建。
 func TestSyncRebuildAfterDocmapLost(t *testing.T) {
 	remote := setupRemote(t)
-	syn, _, _, _ := testSyncer(t, remote)
+	syn, _, _ := testSyncer(t, remote)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("首次同步失败: %v", err)
 	}
@@ -438,12 +421,9 @@ func TestSyncSparseCheckout(t *testing.T) {
 	cfg.Repo.SparseCheckout = true
 	store := &Store{}
 	store.cfgPtr.Store(cfg)
-	embed := NewEmbedClient(cfg.AI)
-	ce := &countEmbed{EmbedClient: embed, n: &atomic.Int64{}}
 	dataDir := t.TempDir()
-	ix := NewIndexer(ce, filepath.Join(dataDir, "civgo", "index.json"), cfg.Retrieval)
 	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
-	syn := NewSyncer(store, ix, dm, dataDir)
+	syn := NewSyncer(store, dm, dataDir)
 	if err := syn.syncOnce(context.Background()); err != nil {
 		t.Fatalf("sparse 同步失败: %v", err)
 	}

@@ -16,14 +16,12 @@ import (
 
 // SyncState 同步状态（data/civgo/state.json）。
 type SyncState struct {
-	LastHead     string    `json:"last_head"` // 上次已同步的远端 commit
+	LastHead     string    `json:"last_head"`  // 上次已同步的远端 commit
 	LastSyncAt   time.Time `json:"last_sync_at"`
 	LastError    string    `json:"last_error,omitempty"`
 	FailCount    int       `json:"fail_count"`
-	LastIndexAt  time.Time `json:"last_index_at"`    // 已废弃（向量索引移除后不再更新，保留兼容旧状态）
-	LastIndexSum string    `json:"last_index_sum"`   // 已废弃
-	LastDocmapAt  time.Time `json:"last_docmap_at"`  // 文档地图最近更新时间
-	LastDocmapSum string    `json:"last_docmap_sum"` // 例如 "files=12 headings=98"
+	LastDocmapAt time.Time `json:"last_docmap_at"`  // 文档地图最近更新时间
+	LastDocmapSum string   `json:"last_docmap_sum"` // 例如 "files=12"
 }
 
 // gitCommandTimeout 单条 git 命令超时（服务器访问 GitHub 不稳定时防止悬挂）。
@@ -33,7 +31,6 @@ const gitCommandTimeout = 90 * time.Second
 // 检测 docs_path 提交变化 → merge --ff-only → 更新文档地图（docmap）。
 type Syncer struct {
 	store     *Store
-	index     *Indexer // 已废弃：向量索引（移除后为 nil，保留字段兼容过渡）
 	docmap    *DocmapStore
 	repoDir   string
 	statePath string
@@ -41,11 +38,9 @@ type Syncer struct {
 }
 
 // NewSyncer 创建同步器。git 二进制缺失由 Service.New 提前探测。
-// index 为已废弃的向量索引器，过渡期仍传入（保留建索引），移除后传 nil。
-func NewSyncer(store *Store, index *Indexer, docmap *DocmapStore, dataDir string) *Syncer {
+func NewSyncer(store *Store, docmap *DocmapStore, dataDir string) *Syncer {
 	return &Syncer{
 		store:     store,
-		index:     index,
 		docmap:    docmap,
 		repoDir:   filepath.Join(dataDir, "civgo", "repo"),
 		statePath: filepath.Join(dataDir, "civgo", "state.json"),
@@ -289,21 +284,14 @@ func (s *Syncer) gitHead(ctx context.Context, ref string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// docmapAndRecord 更新文档地图（+ 过渡期向量索引）并落盘状态。
+// docmapAndRecord 更新文档地图并落盘状态。
 func (s *Syncer) docmapAndRecord(ctx context.Context, cfg *Config, head string) error {
 	docsDir := filepath.Join(s.repoDir, cfg.Repo.DocsPath)
-	// 文档地图（替代向量索引，AI 检索的基础）
 	m, err := BuildDocmap(docsDir, s.docmapPath(), s.docmap.Get())
 	if err != nil {
 		return s.fail(err)
 	}
 	s.docmap.Replace(m)
-	// 过渡期：向量索引仍重建（cg0.1.7 移除）
-	if s.index != nil {
-		if _, ierr := s.index.RebuildChanged(ctx, docsDir); ierr != nil {
-			return s.fail(ierr)
-		}
-	}
 	st := s.loadState()
 	if head != "" {
 		st.LastHead = head

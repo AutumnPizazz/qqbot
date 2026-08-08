@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -362,5 +363,17 @@ func TestHandleQuestionAIError(t *testing.T) {
 	waitReply(t, mgr, 1)
 	if !strings.Contains(mgr.lastSent(), "不可用") {
 		t.Errorf("AI 失败应提示不可用: %s", mgr.lastSent())
+	}
+}
+
+// writeDoc 写测试文档（自旧 index_test.go 迁入）。
+func writeDoc(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := dir + "/" + name
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

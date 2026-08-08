@@ -27,9 +27,6 @@ func TestDefaultConfig(t *testing.T) {
 	if c.AI.ChatModel != "deepseek-v4-flash" {
 		t.Errorf("chat_model 默认值错误: %s", c.AI.ChatModel)
 	}
-	if c.Retrieval.Mode != "vector" || c.Retrieval.TopK != 6 {
-		t.Errorf("retrieval 默认值错误: %+v", c.Retrieval)
-	}
 	if c.Agent.MaxToolCalls != 8 || c.Agent.MaxContextChars != 12000 {
 		t.Errorf("agent 默认值错误: %+v", c.Agent)
 	}
@@ -110,12 +107,6 @@ func TestValidateErrors(t *testing.T) {
 		{"sync 间隔太大", func(c *Config) { c.Repo.SyncIntervalSec = 7200 }, "sync_interval_sec"},
 		{"base_url 无协议", func(c *Config) { c.AI.BaseURL = "ai.realseek.wiki/v1" }, "http"},
 		{"chat_model 空", func(c *Config) { c.AI.ChatModel = "" }, "chat_model"},
-		{"embedding_model 空", func(c *Config) { c.AI.EmbeddingModel = "" }, "embedding_model"},
-		{"top_k 越界", func(c *Config) { c.Retrieval.TopK = 0 }, "top_k"},
-		{"chunk_size 越界", func(c *Config) { c.Retrieval.ChunkSize = 100 }, "chunk_size"},
-		{"overlap >= size", func(c *Config) { c.Retrieval.ChunkOverlap = 800 }, "chunk_overlap"},
-		{"min_score 越界", func(c *Config) { c.Retrieval.MinScore = 2 }, "min_score"},
-		{"mode 非法", func(c *Config) { c.Retrieval.Mode = "hybrid" }, "retrieval.mode"},
 		{"per_user > per_group", func(c *Config) { c.RateLimit.PerUserMin = 20 }, "per_user_min"},
 		{"并发为 0", func(c *Config) { c.RateLimit.MaxConcurrentAI = 0 }, "rate_limit"},
 		{"max_tool_calls 越界", func(c *Config) { c.Agent.MaxToolCalls = 0 }, "max_tool_calls"},
