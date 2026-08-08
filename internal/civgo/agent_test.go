@@ -72,7 +72,7 @@ func filepathJoinTemp(t *testing.T) string {
 func TestAgentDirectAnswer(t *testing.T) {
 	chat := newScriptChat(scriptStep{text: "弓手射程 2 格"})
 	a := testAgent(t, chat)
-	answer, usage, err := a.Run(context.Background(), "弓手射程多少？")
+	answer, usage, err := a.Run(context.Background(), "弓手射程多少？", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAgentToolLoop(t *testing.T) {
 		scriptStep{text: "根据大纲，弓手是远程单位。"},
 	)
 	a := testAgent(t, chat)
-	answer, usage, err := a.Run(context.Background(), "弓手是什么？")
+	answer, usage, err := a.Run(context.Background(), "弓手是什么？", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestAgentMultipleCalls(t *testing.T) {
 		scriptStep{text: "两个都看了。"},
 	)
 	a := testAgent(t, chat)
-	answer, _, err := a.Run(context.Background(), "对比一下")
+	answer, _, err := a.Run(context.Background(), "对比一下", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestAgentMaxToolCalls(t *testing.T) {
 		scriptStep{text: "上限后作答"},
 	)
 	a := NewAgent(chat, ex, func() *Config { return cfg })
-	answer, _, err := a.Run(context.Background(), "q")
+	answer, _, err := a.Run(context.Background(), "q", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestAgentFallbackDirect(t *testing.T) {
 		scriptStep{text: "基于已读大纲回答"},
 	)
 	a := testAgent(t, chat)
-	answer, _, err := a.Run(context.Background(), "q")
+	answer, _, err := a.Run(context.Background(), "q", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestAgentFallbackDirect(t *testing.T) {
 func TestAgentFirstCallFails(t *testing.T) {
 	chat := newScriptChat(scriptStep{err: errors.New("网关挂了")})
 	a := testAgent(t, chat)
-	if _, _, err := a.Run(context.Background(), "q"); err == nil {
+	if _, _, err := a.Run(context.Background(), "q", 111); err == nil {
 		t.Fatal("首轮失败应报错")
 	}
 }
@@ -223,7 +223,7 @@ func TestAgentToolErrorNoPanic(t *testing.T) {
 		scriptStep{text: "工具失败但继续"},
 	)
 	a := testAgent(t, chat)
-	answer, _, err := a.Run(context.Background(), "q")
+	answer, _, err := a.Run(context.Background(), "q", 111)
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}

@@ -21,10 +21,11 @@ func NewAgent(chat ChatCompleter, tools *ToolExecutor, cfg func() *Config) *Agen
 }
 
 // Run 执行一次问答：工具调用循环直到 AI 直接作答。
+// groupID 为提问所在群（recall_history 按群召回）。
 // 返回最终回答文本与累计 token 用量（含全部工具轮次）。
 // 保护机制：max_tool_calls 轮工具上限、累计上下文预算（tools 内执行）、
 // 中途 AI 调用失败时已读文档则降级直答一次。
-func (a *Agent) Run(ctx context.Context, q string) (string, Usage, error) {
+func (a *Agent) Run(ctx context.Context, q string, groupID int64) (string, Usage, error) {
 	cfg := a.cfg()
 	budget := newContextBudget(cfg.Agent)
 	input := []InputItem{{"role": "user", "content": q}}
@@ -72,7 +73,7 @@ func (a *Agent) Run(ctx context.Context, q string) (string, Usage, error) {
 
 		// 执行工具调用并回填
 		for _, c := range comp.Calls {
-			out, xerr := a.tools.Execute(c.Name, c.Arguments, budget)
+			out, xerr := a.tools.Execute(c.Name, c.Arguments, budget, groupID)
 			if xerr != nil {
 				out = "工具执行失败：" + xerr.Error()
 			}

@@ -102,13 +102,15 @@ func testService(t *testing.T) (*Service, *fakeManager, *Store) {
 	}
 
 	mgr := &fakeManager{}
-	agent := NewAgent(&fixedChat{answer: "默认回答"},
-		NewToolExecutor(dm, dir, func() *Config { return store.Get() }),
-		func() *Config { return store.Get() })
+	history := NewHistoryStore(filepath.Join(dataDir, "civgo", "history"), func() *Config { return store.Get() })
+	te := NewToolExecutor(dm, dir, func() *Config { return store.Get() })
+	te.SetHistory(history)
+	agent := NewAgent(&fixedChat{answer: "默认回答"}, te, func() *Config { return store.Get() })
 	s := &Service{
 		store:   store,
 		docmap:  dm,
 		agent:   agent,
+		history: history,
 		mgr:     mgr,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),

@@ -12,17 +12,23 @@ import (
 // listDocsMaxLines 单次 list_docs 输出行数上限（超出提示下钻）。
 const listDocsMaxLines = 60
 
-// ToolExecutor 工具执行器：绑定文档地图与文档目录，agent 循环内串行执行。
-// 工具集：list_docs / get_doc_outline / read_doc（recall_history 由 history 模块注册）。
+// ToolExecutor 工具执行器：绑定文档地图/文档目录/群历史，agent 循环内串行执行。
+// 工具集：list_docs / get_doc_outline / read_doc / recall_history。
 type ToolExecutor struct {
 	docmap  *DocmapStore
 	docsDir string
+	history *HistoryStore // 可空（未启用时 recall_history 返回提示）
 	cfg     func() *Config // 热重载快照
 }
 
 // NewToolExecutor 创建工具执行器。
 func NewToolExecutor(docmap *DocmapStore, docsDir string, cfg func() *Config) *ToolExecutor {
 	return &ToolExecutor{docmap: docmap, docsDir: docsDir, cfg: cfg}
+}
+
+// SetHistory 绑定群历史存储（recall_history 工具用）。
+func (e *ToolExecutor) SetHistory(h *HistoryStore) {
+	e.history = h
 }
 
 // ContextBudget 上下文预算：read_doc 内容计入 readUsed；list/outline 计入 lightUsed。
@@ -87,11 +93,25 @@ func (e *ToolExecutor) Definitions() []Tool {
 				"additionalProperties": false,
 			},
 		},
+		{
+			Name: "recall_history",
+			Description: "回顾本群之前的问答记录（含提问者与时间）。" +
+				"当问题依赖前文（如「它」「上面说的」「那个技能」或追问他人话题）时调用；" +
+				"与历史无关的新问题不要调用以节省开销。可传 query 关键词过滤。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "关键词，留空则返回最近记录"},
+				},
+				"additionalProperties": false,
+			},
+		},
 	}
 }
 
 // Execute 执行一次工具调用，返回给 AI 的结果文本（任何情况不 panic）。
-func (e *ToolExecutor) Execute(name, argsJSON string, budget *ContextBudget) (string, error) {
+// groupID 为当前提问所在群（recall_history 按群召回）。
+func (e *ToolExecutor) Execute(name, argsJSON string, budget *ContextBudget, groupID int64) (string, error) {
 	args := map[string]any{}
 	if strings.TrimSpace(argsJSON) != "" {
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -106,12 +126,30 @@ func (e *ToolExecutor) Execute(name, argsJSON string, budget *ContextBudget) (st
 		return e.getDocOutline(args, budget), nil
 	case "read_doc":
 		return e.readDoc(args, budget)
+	case "recall_history":
+		return e.recallHistory(args, groupID), nil
 	default:
 		return "", fmt.Errorf("未知工具: %s", name)
 	}
 }
 
 // ---- 工具实现 ----
+
+// recallHistory 按群召回历史问答（AI 调用即决策带哪些历史）。
+func (e *ToolExecutor) recallHistory(args map[string]any, groupID int64) string {
+	if e.history == nil {
+		return "（历史记录未启用）"
+	}
+	maxItems := e.cfg().History.MaxRecallEntries
+	if v := argInt(args, "max_items", 0); v > 0 && v < maxItems {
+		maxItems = v
+	}
+	entries := e.history.Recall(groupID, argString(args, "query"), maxItems)
+	if len(entries) == 0 {
+		return "（本群没有相关历史问答记录）"
+	}
+	return FormatEntries(entries)
+}
 
 // argString 读取字符串参数。
 func argString(args map[string]any, key string) string {

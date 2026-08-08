@@ -55,6 +55,7 @@ type Service struct {
 	index   *Indexer // 已废弃：向量索引（过渡期保留，cg0.1.7 移除）
 	docmap  *DocmapStore
 	agent   *Agent // AI 自主检索代理（工具循环）
+	history *HistoryStore // 群问答历史（AI 决策召回）
 	mgr     Manager
 	rl      *rateLimiter
 	sem     chan struct{} // AI 并发信号量
@@ -97,13 +98,17 @@ func New(opts Options) (*Service, error) {
 		}
 	}
 
-	agent := NewAgent(chat, NewToolExecutor(docmap, docsDir, func() *Config { return store.Get() }),
+	history := NewHistoryStore(filepath.Join(opts.DataDir, "civgo", "history"),
 		func() *Config { return store.Get() })
+	te := NewToolExecutor(docmap, docsDir, func() *Config { return store.Get() })
+	te.SetHistory(history)
+	agent := NewAgent(chat, te, func() *Config { return store.Get() })
 	return &Service{
 		store:   store,
 		index:   index,
 		docmap:  docmap,
 		agent:   agent,
+		history: history,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),
@@ -194,17 +199,19 @@ func (s *Service) OnMessage(raw json.RawMessage) error {
 	return nil
 }
 
-// handleQuestion agent 问答编排：AI 自主检索（工具循环）→ 回复（goroutine 内执行）。
+// handleQuestion agent 问答编排：AI 自主检索（工具循环）→ 回复 → 记录历史（goroutine 内执行）。
 func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 	start := time.Now()
 	ctx := context.Background()
 
-	answer, usage, err := s.agent.Run(ctx, q)
+	answer, usage, err := s.agent.Run(ctx, q, m.GroupID)
 	if err != nil {
 		slog.Warn("civgo AI 调用失败", "err", err, "ms", time.Since(start).Milliseconds())
 		s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
 		return
 	}
+	// 问答完成后记录历史（AI 决策召回的数据源）；回答截断由 HistoryStore 负责
+	s.history.Append(m.GroupID, m.UserID, q, answer, usage.InputTokens+usage.OutputTokens)
 	s.sendAnswer(m, answer)
 	slog.Info("civgo 问答完成", "group", m.GroupID, "user", m.UserID,
 		"q", truncateRunes(q, 50),

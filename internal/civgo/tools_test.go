@@ -22,7 +22,7 @@ func testToolEnv(t *testing.T) (*ToolExecutor, *ContextBudget) {
 
 func TestListDocs(t *testing.T) {
 	ex, b := testToolEnv(t)
-	out, err := ex.Execute("list_docs", "{}", b)
+	out, err := ex.Execute("list_docs", "{}", b, 111)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestListDocs(t *testing.T) {
 		t.Errorf("非支持类型不应列出: %s", out)
 	}
 	// 下钻
-	out2, _ := ex.Execute("list_docs", `{"path":"units"}`, b)
+	out2, _ := ex.Execute("list_docs", `{"path":"units"}`, b, 111)
 	if !strings.Contains(out2, "knight.md") {
 		t.Errorf("下钻应列出 units 下文件: %s", out2)
 	}
@@ -47,7 +47,7 @@ func TestListDocs(t *testing.T) {
 		t.Errorf("下钻不应含父级文件: %s", out2)
 	}
 	// 无效路径
-	out3, _ := ex.Execute("list_docs", `{"path":"../etc"}`, b)
+	out3, _ := ex.Execute("list_docs", `{"path":"../etc"}`, b, 111)
 	if !strings.Contains(out3, "无效") {
 		t.Errorf("路径逃逸应拒绝: %s", out3)
 	}
@@ -55,7 +55,7 @@ func TestListDocs(t *testing.T) {
 
 func TestGetDocOutline(t *testing.T) {
 	ex, b := testToolEnv(t)
-	out, err := ex.Execute("get_doc_outline", `{"path":"archer.md"}`, b)
+	out, err := ex.Execute("get_doc_outline", `{"path":"archer.md"}`, b, 111)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +63,12 @@ func TestGetDocOutline(t *testing.T) {
 		t.Errorf("大纲输出错误: %s", out)
 	}
 	// 不存在文件
-	out2, _ := ex.Execute("get_doc_outline", `{"path":"nope.md"}`, b)
+	out2, _ := ex.Execute("get_doc_outline", `{"path":"nope.md"}`, b, 111)
 	if !strings.Contains(out2, "不存在") {
 		t.Errorf("不存在文件应提示: %s", out2)
 	}
 	// 缺 path 参数
-	out3, _ := ex.Execute("get_doc_outline", `{}`, b)
+	out3, _ := ex.Execute("get_doc_outline", `{}`, b, 111)
 	if !strings.Contains(out3, "无效") {
 		t.Errorf("缺 path 应提示无效: %s", out3)
 	}
@@ -77,7 +77,7 @@ func TestGetDocOutline(t *testing.T) {
 func TestReadDoc(t *testing.T) {
 	ex, b := testToolEnv(t)
 	// 全文（小文件）
-	out, err := ex.Execute("read_doc", `{"path":"archer.md"}`, b)
+	out, err := ex.Execute("read_doc", `{"path":"archer.md"}`, b, 111)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,22 +85,22 @@ func TestReadDoc(t *testing.T) {
 		t.Errorf("读取输出错误: %s", out)
 	}
 	// 分页：start_line/max_lines
-	out2, _ := ex.Execute("read_doc", `{"path":"archer.md","start_line":4,"max_lines":2}`, b)
+	out2, _ := ex.Execute("read_doc", `{"path":"archer.md","start_line":4,"max_lines":2}`, b, 111)
 	if !strings.Contains(out2, "第 4~5 行") || !strings.Contains(out2, "4: ## 技能体系") {
 		t.Errorf("分页读取错误: %s", out2)
 	}
 	// 超范围
-	out3, _ := ex.Execute("read_doc", `{"path":"archer.md","start_line":99}`, b)
+	out3, _ := ex.Execute("read_doc", `{"path":"archer.md","start_line":99}`, b, 111)
 	if !strings.Contains(out3, "超出范围") {
 		t.Errorf("超范围应提示: %s", out3)
 	}
 	// 逃逸
-	out4, _ := ex.Execute("read_doc", `{"path":"../../etc/passwd"}`, b)
+	out4, _ := ex.Execute("read_doc", `{"path":"../../etc/passwd"}`, b, 111)
 	if !strings.Contains(out4, "无效") {
 		t.Errorf("逃逸路径应拒绝: %s", out4)
 	}
 	// 不存在
-	out5, _ := ex.Execute("read_doc", `{"path":"nope.md"}`, b)
+	out5, _ := ex.Execute("read_doc", `{"path":"nope.md"}`, b, 111)
 	if !strings.Contains(out5, "读取失败") {
 		t.Errorf("不存在应提示读取失败: %s", out5)
 	}
@@ -112,21 +112,21 @@ func TestReadDocBudget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Agent.MaxContextChars = 10
 	b := newContextBudget(cfg.Agent)
-	out, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b)
+	out, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b, 111)
 	if strings.Contains(out, "预算已满") {
 		t.Errorf("首次读取不应被预算拒绝: %s", out)
 	}
 	if b.readUsed < 10 {
 		t.Errorf("读取后预算应已累计: %d", b.readUsed)
 	}
-	out2, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b)
+	out2, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b, 111)
 	if !strings.Contains(out2, "预算已满") {
 		t.Errorf("预算耗尽后应拒绝读取: %s", out2)
 	}
 	// 手动耗尽预算
 	b2 := newContextBudget(DefaultConfig().Agent)
 	b2.readUsed = b2.readMax
-	out3, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b2)
+	out3, _ := ex.Execute("read_doc", `{"path":"archer.md"}`, b2, 111)
 	if !strings.Contains(out3, "预算已满") {
 		t.Errorf("预算耗尽后应拒绝: %s", out3)
 	}
@@ -134,7 +134,7 @@ func TestReadDocBudget(t *testing.T) {
 
 func TestExecuteUnknownTool(t *testing.T) {
 	ex, b := testToolEnv(t)
-	_, err := ex.Execute("no_such_tool", "{}", b)
+	_, err := ex.Execute("no_such_tool", "{}", b, 111)
 	if err == nil || !strings.Contains(err.Error(), "未知工具") {
 		t.Fatalf("未知工具应报错: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 func TestExecuteBadJSONArgs(t *testing.T) {
 	ex, b := testToolEnv(t)
 	// 坏 JSON 按空参数处理（list_docs 无参 = 根目录），不 panic
-	out, err := ex.Execute("list_docs", `{bad json`, b)
+	out, err := ex.Execute("list_docs", `{bad json`, b, 111)
 	if err != nil {
 		t.Fatalf("坏 JSON 不应报错: %v", err)
 	}
