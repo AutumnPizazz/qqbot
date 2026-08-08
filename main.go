@@ -26,6 +26,7 @@ import (
 	"qqbot/internal/bot"
 	"qqbot/internal/civgo"
 	"qqbot/internal/config"
+	"qqbot/internal/mailer"
 	"qqbot/internal/onebot"
 	"qqbot/internal/state"
 )
@@ -144,8 +145,23 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 				}
 			})
 			b.Start()
-			// civgo 社区服务：独立配置（data/civgo/civgo.json），未配置/未启用时零副作用
-			if cv, cerr := civgo.New(civgo.Options{DataDir: dataDir, Manager: manager}); cerr != nil {
+			// civgo 社区服务：独立配置（data/civgo/civgo.json），未配置/未启用时零副作用。
+			// 邮件通道复用 control.json 的 SMTP（与登录验证码/watchdog 同一通道），未配置时用量预警自动不启用。
+			var sendMail func(to, subject, body string) error
+			if e := svc.Effective().Email; e.SMTPHost != "" && e.SMTPPort > 0 && e.SMTPUser != "" && e.SMTPPassword != "" {
+				sender := mailer.New(mailer.Config{
+					Host: e.SMTPHost, Port: e.SMTPPort,
+					User: e.SMTPUser, Password: e.SMTPPassword, From: e.SMTPUser,
+				})
+				defTo := svc.Effective().Watchdog.EmailTo // Effective() 已回退（watchdog.email_to → 系统邮箱收件人）
+				sendMail = func(to, subject, body string) error {
+					if to == "" {
+						to = defTo
+					}
+					return sender.Send(to, subject, body)
+				}
+			}
+			if cv, cerr := civgo.New(civgo.Options{DataDir: dataDir, Manager: manager, SendMail: sendMail}); cerr != nil {
 				if !errors.Is(cerr, civgo.ErrNotConfigured) {
 					slog.Error("civgo 模块初始化失败", "err", cerr)
 				}

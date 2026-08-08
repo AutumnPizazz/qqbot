@@ -41,6 +41,8 @@ var _ Manager = (*onebot.Manager)(nil)
 type Options struct {
 	DataDir string
 	Manager Manager
+	// SendMail 邮件发送（main 注入 mailer.Sender 包装；nil = 未注入，用量预警不启用）。
+	SendMail func(to, subject, body string) error
 }
 
 // ChatCompleter 对话接口（ChatClient 实现；测试注入 fake）。
@@ -56,6 +58,7 @@ type Service struct {
 	docmap  *DocmapStore
 	agent   *Agent // AI 自主检索代理（工具循环）
 	history *HistoryStore // 群问答历史（AI 决策召回）
+	meter   *UsageMeter // token 用量计量与预警
 	mgr     Manager
 	rl      *rateLimiter
 	sem     chan struct{} // AI 并发信号量
@@ -103,12 +106,14 @@ func New(opts Options) (*Service, error) {
 	te := NewToolExecutor(docmap, docsDir, func() *Config { return store.Get() })
 	te.SetHistory(history)
 	agent := NewAgent(chat, te, func() *Config { return store.Get() })
+	meter := NewUsageMeter(func() *Config { return store.Get() }, opts.SendMail, "")
 	return &Service{
 		store:   store,
 		index:   index,
 		docmap:  docmap,
 		agent:   agent,
 		history: history,
+		meter:   meter,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),
@@ -212,6 +217,8 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 	}
 	// 问答完成后记录历史（AI 决策召回的数据源）；回答截断由 HistoryStore 负责
 	s.history.Append(m.GroupID, m.UserID, q, answer, usage.InputTokens+usage.OutputTokens)
+	// token 用量计量与预警（窗口超阈值触发邮件）
+	s.meter.Add(usage.InputTokens+usage.OutputTokens, m.GroupID, m.UserID)
 	s.sendAnswer(m, answer)
 	slog.Info("civgo 问答完成", "group", m.GroupID, "user", m.UserID,
 		"q", truncateRunes(q, 50),

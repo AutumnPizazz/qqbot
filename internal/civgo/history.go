@@ -62,6 +62,10 @@ func (s *HistoryStore) Append(groupID, userID int64, question, answer string, to
 		Tokens:   tokens,
 	}
 	list := s.groups[groupID]
+	// 保证时间严格单调（同纳秒并发追加时排序稳定）
+	if n := len(list); n > 0 && !entry.Time.After(list[n-1].Time) {
+		entry.Time = list[n-1].Time.Add(time.Nanosecond)
+	}
 	list = append(list, entry)
 	if len(list) > max {
 		list = list[len(list)-max:]
