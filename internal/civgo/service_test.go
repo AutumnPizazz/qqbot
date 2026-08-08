@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"qqbot/internal/onebot"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,7 +82,7 @@ func msg(groupID, userID, selfID int64, text string) json.RawMessage {
 	return b
 }
 
-// testService 构造 Service（fake 嵌入 + 有内容的索引）。
+// testService 构造 Service（fake chat + docmap + 有内容的文档目录）。
 func testService(t *testing.T) (*Service, *fakeManager, *Store) {
 	t.Helper()
 	cfg := DefaultConfig()
@@ -92,28 +92,28 @@ func testService(t *testing.T) (*Service, *fakeManager, *Store) {
 	store.cfgPtr.Store(cfg)
 
 	dataDir := t.TempDir()
-	dir := dataDir + "/docs"
+	dir := filepath.Join(dataDir, "docs")
 	writeDoc(t, dir, "units/archer.md", "# 弓手\n弓手是远程单位，射程 2 格，攻击力 5。\n")
 	writeDoc(t, dir, "units/knight.md", "# 骑士\n骑士是近战单位，移动力高。\n")
 
-	embed := NewEmbedClient(cfg.AI)
-	ce := &countEmbed{EmbedClient: embed, n: &atomic.Int64{}}
-	ix := NewIndexer(ce, dataDir+"/civgo/index.json", cfg.Retrieval)
-	ix.SetMode("keyword") // 测试用 keyword 检索（不依赖嵌入网关）
-	if _, err := ix.RebuildAll(context.Background(), dir); err != nil {
-		t.Fatalf("建索引失败: %v", err)
+	dm := NewDocmapStore(filepath.Join(dataDir, "civgo", "docmap.json"))
+	if _, err := BuildDocmap(dir, filepath.Join(dataDir, "civgo", "docmap.json"), nil); err != nil {
+		t.Fatalf("建 docmap 失败: %v", err)
 	}
 
 	mgr := &fakeManager{}
+	agent := NewAgent(&fixedChat{answer: "默认回答"},
+		NewToolExecutor(dm, dir, func() *Config { return store.Get() }),
+		func() *Config { return store.Get() })
 	s := &Service{
 		store:   store,
-		index:   ix,
-		chat:    &fixedChat{answer: "默认回答"},
-		embed:   embed,
+		docmap:  dm,
+		agent:   agent,
 		mgr:     mgr,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),
 		dataDir: dataDir,
+		docsDir: dir,
 	}
 	return s, mgr, store
 }
@@ -147,7 +147,7 @@ func waitReply(t *testing.T, mgr *fakeManager, n int) {
 func TestOnMessageBasicFlow(t *testing.T) {
 	s, mgr, _ := testService(t)
 	// 覆盖 chat：直接返回固定回答
-	s.chat = &fixedChat{answer: "弓手射程 2 格，来源 (archer.md)"}
+	s.agent.chat = &fixedChat{answer: "弓手射程 2 格"}
 
 	raw := msg(111, 1001, 999, "弓手射程多少？")
 	if err := s.OnMessage(raw); err != nil {
@@ -161,13 +161,6 @@ func TestOnMessageBasicFlow(t *testing.T) {
 	// @ 前缀由 SendGroupMsgAt 内部生成且只出现一次（civgo 不重复拼接）
 	if n := strings.Count(reply, "[CQ:at,qq=1001]"); n != 1 {
 		t.Errorf("@ 应恰好 1 次（SendGroupMsgAt 自动生成），got %d: %s", n, reply)
-	}
-	// 末尾为话题提示（不再有 📄 文件列表；AI 文内引用出处是规则要求的合法行为）
-	if !strings.Contains(reply, "💡 可以继续问：") {
-		t.Errorf("应附话题提示: %s", reply)
-	}
-	if strings.Contains(reply, "📄") {
-		t.Errorf("不应出现文件列表: %s", reply)
 	}
 }
 
@@ -210,7 +203,7 @@ func TestOnMessageRateLimit(t *testing.T) {
 	cfg := store.Get()
 	cfg.RateLimit.PerUserMin = 2
 	s.sem = make(chan struct{}, 5)
-	s.chat = &fixedChat{answer: "回答"}
+	s.agent.chat = &fixedChat{answer: "回答"}
 
 	// 前 2 次放行，第 3 次限流提示
 	for i := 0; i < 2; i++ {
@@ -243,62 +236,16 @@ func TestOnMessageConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// TestNoHitCallsAI 无命中时仍调用 AI 一次（处理闲聊/自我介绍/换说法）。
-func TestNoHitCallsAI(t *testing.T) {
+// TestAICallFail 问答阶段 AI 失败 → 友好提示（agent 层无工具结果时直接报错）。
+func TestAICallFail(t *testing.T) {
 	s, mgr, _ := testService(t)
-	s.chat = &fixedChat{answer: "我是 civgo 游戏助手，只回答游戏内容相关的问题～"}
-	// 空索引 → 无命中 → 走 AI
-	s.index = NewIndexer(&countEmbed{EmbedClient: NewEmbedClient(testAIConfig()), n: &atomic.Int64{}},
-		t.TempDir()+"/i.json", DefaultConfig().Retrieval)
-	if err := s.OnMessage(msg(111, 1001, 999, "你是谁")); err != nil {
+	s.agent.chat = &fixedChat{err: fmt.Errorf("mock 失败")}
+	if err := s.OnMessage(msg(111, 1001, 999, "弓手射程多少？")); err != nil {
 		t.Fatal(err)
 	}
 	waitReply(t, mgr, 1)
-	if !strings.Contains(mgr.lastSent(), "civgo 游戏助手") {
-		t.Errorf("无命中应调 AI 回答，got: %s", mgr.lastSent())
-	}
-	// 无命中 + AI 失败 → 友好提示
-	s.chat = &fixedChat{err: fmt.Errorf("mock 失败")}
-	if err := s.OnMessage(msg(111, 1001, 999, "你是谁")); err != nil {
-		t.Fatal(err)
-	}
-	waitReply(t, mgr, 2)
 	if !strings.Contains(mgr.lastSent(), "不可用") {
-		t.Errorf("无命中且 AI 失败应提示不可用，got: %s", mgr.lastSent())
-	}
-}
-
-// TestNoHitReply 无命中场景下不再有“未找到”话术（由 AI 接管）。
-func TestNoHitReply(t *testing.T) {
-	s, mgr, _ := testService(t)
-	s.chat = &fixedChat{answer: "知识库暂无相关内容"}
-	s.index = NewIndexer(&countEmbed{EmbedClient: NewEmbedClient(testAIConfig()), n: &atomic.Int64{}},
-		t.TempDir()+"/i.json", DefaultConfig().Retrieval)
-	if err := s.OnMessage(msg(111, 1001, 999, "完全无关的话题词")); err != nil {
-		t.Fatal(err)
-	}
-	waitReply(t, mgr, 1)
-	if !strings.Contains(mgr.lastSent(), "知识库暂无相关内容") {
-		t.Errorf("无命中应由 AI 回答: %s", mgr.lastSent())
-	}
-}
-
-func TestBuildDocContext(t *testing.T) {
-	hits := []Hit{
-		{Chunk: Chunk{File: "a.md", Heading: "弓手", Text: "弓手内容"}, Score: 0.9},
-		{Chunk: Chunk{File: "b.md", Text: "骑士内容"}, Score: 0.5},
-	}
-	ctx := buildDocContext(hits, 10000)
-	if !strings.Contains(ctx, "【来源: a.md §弓手】") {
-		t.Errorf("应含来源标注: %s", ctx)
-	}
-	if !strings.Contains(ctx, "弓手内容") || !strings.Contains(ctx, "骑士内容") {
-		t.Errorf("应含两块内容: %s", ctx)
-	}
-	// 上限截断
-	small := buildDocContext(hits, 10)
-	if runeLen(small) > 10 {
-		t.Errorf("超限应截断: %d rune", runeLen(small))
+		t.Errorf("AI 失败应提示不可用，got: %s", mgr.lastSent())
 	}
 }
 
@@ -369,7 +316,7 @@ func TestSendAnswerSplits(t *testing.T) {
 	m := onebotMsg(111, 1001)
 	// 长回答分条发送
 	long := strings.Repeat("很长很长的回答内容，", 400) // ~4000+ 字符
-	s.sendAnswer(m, long, []Hit{{Chunk: Chunk{File: "04_建筑系统.md", Text: "x"}, Score: 1}})
+	s.sendAnswer(m, long)
 	if mgr.count() < 2 {
 		t.Fatalf("长回答应分多条发送，got %d", mgr.count())
 	}
@@ -384,11 +331,6 @@ func TestSendAnswerSplits(t *testing.T) {
 			t.Errorf("第 %d 条不应重复 @: %s", i+1, all[i][:30])
 		}
 	}
-	// 末条附话题提示
-	last := all[len(all)-1]
-	if !strings.Contains(last, "💡 可以继续问：") {
-		t.Errorf("末条应附话题提示: %s", last[:50])
-	}
 }
 
 // ---- 小工具 ----
@@ -400,7 +342,7 @@ func onebotMsg(groupID, userID int64) onebot.GroupMessage {
 // TestHandleQuestionWithFixedChat 直接测 handleQuestion（注入固定 chat）。
 func TestHandleQuestionWithFixedChat(t *testing.T) {
 	s, mgr, _ := testService(t)
-	s.chat = &fixedChat{answer: "固定回答"}
+	s.agent.chat = &fixedChat{answer: "固定回答"}
 	m := onebotMsg(111, 1001)
 	s.handleQuestion(m, "弓手")
 	waitReply(t, mgr, 1)
@@ -411,7 +353,7 @@ func TestHandleQuestionWithFixedChat(t *testing.T) {
 
 func TestHandleQuestionAIError(t *testing.T) {
 	s, mgr, _ := testService(t)
-	s.chat = &fixedChat{err: fmt.Errorf("mock 失败")}
+	s.agent.chat = &fixedChat{err: fmt.Errorf("mock 失败")}
 	m := onebotMsg(111, 1001)
 	s.handleQuestion(m, "弓手")
 	waitReply(t, mgr, 1)

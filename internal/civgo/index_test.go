@@ -373,79 +373,6 @@ func TestRebuildKeywordNoEmbed(t *testing.T) {
 	}
 }
 
-func TestTopicHints(t *testing.T) {
-	cases := []struct {
-		name string
-		hits []Hit
-		want string
-	}{
-		{"标题优先", []Hit{
-			{Chunk: Chunk{File: "04_建筑系统.md", Heading: "建筑系统", Text: "x"}},
-			{Chunk: Chunk{File: "05_经济与后勤.md", Heading: "经济", Text: "x"}},
-		}, "建筑系统、经济"},
-		{"文件名回退+序号清理", []Hit{
-			{Chunk: Chunk{File: "07_战争与战棋.md", Text: "x"}},
-		}, "战争与战棋"},
-		{"去重", []Hit{
-			{Chunk: Chunk{File: "a.md", Heading: "弓手", Text: "x"}},
-			{Chunk: Chunk{File: "b.md", Heading: "弓手", Text: "x"}},
-			{Chunk: Chunk{File: "c.md", Heading: "骑士", Text: "x"}},
-			{Chunk: Chunk{File: "d.md", Heading: "法师", Text: "x"}},
-		}, "弓手、骑士、法师"},
-		{"中文序号剥离", []Hit{
-			{Chunk: Chunk{File: "02_地图与城市.md", Heading: "六、初始建筑", Text: "x"}},
-			{Chunk: Chunk{File: "01_总体规则.md", Heading: "1. 游戏目标", Text: "x"}},
-		}, "初始建筑、游戏目标"},
-		{"文档性词汇过滤+回退", []Hit{
-			{Chunk: Chunk{File: "07_战争与战棋.md", Heading: "civgo 游戏内容文档索引", Text: "x"}},
-			{Chunk: Chunk{File: "01_总体规则.md", Heading: "阅读顺序", Text: "x"}},
-		}, "战争与战棋、总体规则"},
-		{"短标题过滤+回退", []Hit{
-			{Chunk: Chunk{File: "03_数值框架.md", Heading: "六", Text: "x"}},
-			{Chunk: Chunk{File: "04_建筑系统.md", Heading: "初始建筑", Text: "x"}},
-		}, "数值框架、初始建筑"},
-		{"空命中", nil, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(topicHints(tc.hits), "、")
-			if got != tc.want {
-				t.Errorf("topicHints = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestCleanTopic(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"六、初始建筑", "初始建筑"},
-		{"1. 游戏目标", "游戏目标"},
-		{"三）资源", "资源"},
-		{"(2) 单位", "单位"},
-		{"初始建筑", "初始建筑"},
-		{"  ## 标题  ", "标题"},
-	}
-	for _, tc := range cases {
-		if got := cleanTopic(tc.in); got != tc.want {
-			t.Errorf("cleanTopic(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestCleanTopicName(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"04_建筑系统.md", "建筑系统"},
-		{"units/archer.md", "archer"},
-		{"01_总体规则.md", "总体规则"},
-		{"a_b.md", "a_b"}, // 非数字前缀不清理
-	}
-	for _, tc := range cases {
-		if got := cleanTopicName(tc.in); got != tc.want {
-			t.Errorf("cleanTopicName(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestIsIndexFile(t *testing.T) {
 	for _, f := range []string{"00_索引.md", "index.md", "docs/INDEX.md", "01_总体规则.md", "archer.md"} {
 		want := strings.Contains(strings.ToLower(f), "索引") || strings.Contains(strings.ToLower(filepath.Base(f)), "index")
@@ -476,32 +403,6 @@ func TestRebuildExcludesIndex(t *testing.T) {
 	ix.mu.RUnlock()
 	if strings.Contains(file, "索引") {
 		t.Errorf("索引文件不应在索引中: %s", file)
-	}
-}
-
-func TestLoadGeneralContext(t *testing.T) {
-	s, _, _ := testService(t)
-	// testService 的 dataDir 里 docs 无索引文件 → 空
-	cfg := s.store.Get()
-	if got := s.loadGeneralContext(cfg); got != "" {
-		t.Errorf("无索引文件时应为空，got %q", got)
-	}
-	// 构造含索引文件的 repo 目录
-	repoDir := filepath.Join(s.dataDir, "civgo", "repo", cfg.Repo.DocsPath)
-	writeDoc(t, repoDir, "00_索引.md", "# civgo 索引\n游戏包含：总体规则、地图与城市、建筑系统。\n")
-	writeDoc(t, repoDir, "01_总体规则.md", "# 总体规则\n内容\n")
-	got := s.loadGeneralContext(cfg)
-	if !strings.Contains(got, "civgo 索引") {
-		t.Errorf("应包含索引文件内容: %q", got)
-	}
-	if strings.Contains(got, "总体规则\n内容") {
-		t.Errorf("不应包含非索引文件内容: %q", got)
-	}
-	// 超长截断
-	writeDoc(t, repoDir, "00_索引.md", strings.Repeat("甲", maxGeneralContextChars+500))
-	got = s.loadGeneralContext(cfg)
-	if runeLen(got) > maxGeneralContextChars+1 {
-		t.Errorf("应截断到 %d，got %d", maxGeneralContextChars, runeLen(got))
 	}
 }
 

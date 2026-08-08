@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -55,12 +54,12 @@ type Service struct {
 	store   *Store
 	index   *Indexer // 已废弃：向量索引（过渡期保留，cg0.1.7 移除）
 	docmap  *DocmapStore
-	chat    ChatCompleter
-	embed   *EmbedClient
+	agent   *Agent // AI 自主检索代理（工具循环）
 	mgr     Manager
 	rl      *rateLimiter
 	sem     chan struct{} // AI 并发信号量
 	dataDir string
+	docsDir string // 文档目录（工具执行器用）
 }
 
 // New 创建 Service。配置缺失/无效、缺 git、缺 api_key → ErrNotConfigured
@@ -79,10 +78,10 @@ func New(opts Options) (*Service, error) {
 		return nil, ErrNotConfigured
 	}
 
-	embed := NewEmbedClient(cfg.AI)
-	index := NewIndexer(embed, filepath.Join(opts.DataDir, "civgo", "index.json"), cfg.Retrieval)
+	index := NewIndexer(NewEmbedClient(cfg.AI), filepath.Join(opts.DataDir, "civgo", "index.json"), cfg.Retrieval)
 	index.Load()
 	docmap := NewDocmapStore(filepath.Join(opts.DataDir, "civgo", "docmap.json"))
+	docsDir := filepath.Join(opts.DataDir, "civgo", "repo", cfg.Repo.DocsPath)
 
 	chat := NewChatClient(cfg.AI)
 	// function calling 自检：网关明确不支持（4xx）→ 模块禁用并明确报告；
@@ -98,24 +97,18 @@ func New(opts Options) (*Service, error) {
 		}
 	}
 
-	// 嵌入端点自检：失败降级 keyword（不阻断启动）
-	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-	if err := embed.SelfCheck(ctx); err != nil {
-		slog.Warn("civgo 嵌入自检失败，降级 keyword 检索", "err", err)
-		index.SetMode("keyword")
-	}
-	cancel()
-
+	agent := NewAgent(chat, NewToolExecutor(docmap, docsDir, func() *Config { return store.Get() }),
+		func() *Config { return store.Get() })
 	return &Service{
 		store:   store,
 		index:   index,
 		docmap:  docmap,
-		chat:    chat,
-		embed:   embed,
+		agent:   agent,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),
 		dataDir: opts.DataDir,
+		docsDir: docsDir,
 	}, nil
 }
 
@@ -123,11 +116,9 @@ func New(opts Options) (*Service, error) {
 func (s *Service) Start(ctx context.Context) {
 	syncer := NewSyncer(s.store, s.index, s.docmap, s.dataDir)
 	go syncer.Run(ctx)
-	go s.embedRecoverLoop(ctx)
 	s.mgr.On("message", s.OnMessage)
 	slog.Info("civgo 社区服务已启动",
 		"repo", s.store.Get().Repo.URL,
-		"mode", s.index.Mode(),
 		"groups", s.store.Get().Groups)
 }
 
@@ -203,221 +194,39 @@ func (s *Service) OnMessage(raw json.RawMessage) error {
 	return nil
 }
 
-// handleQuestion 检索 → 拼上下文 → 调 AI → 回复（goroutine 内执行）。
+// handleQuestion agent 问答编排：AI 自主检索（工具循环）→ 回复（goroutine 内执行）。
 func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 	start := time.Now()
-	cfg := s.store.Get()
 	ctx := context.Background()
 
-	hits, err := s.index.Search(ctx, q)
-	if err != nil {
-		// 嵌入失败：尝试 keyword 兜底；仍失败则友好提示
-		if s.index.Mode() == "vector" {
-			slog.Warn("civgo 向量检索失败，尝试 keyword 兜底", "err", err)
-			hits = s.index.KeywordSearch(q, cfg.Retrieval.TopK)
-			if len(hits) > 0 {
-				s.index.SetMode("keyword")
-			}
-		}
-		if len(hits) == 0 {
-			s.reply(m, "🤖 知识检索服务暂时不可用，请稍后再试")
-			return
-		}
-	}
-	if len(hits) == 0 {
-		// 无命中：仍调 AI 一次（仅带通用游戏常识），处理闲聊/自我介绍/换说法等场景。
-		// systemPrompt 规则保证：游戏相关问题 AI 会如实说“文档中未找到”，
-		// 无关问题会礼貌说明身份，不会瞎编。
-		docContext := ""
-		if general := s.loadGeneralContext(cfg); general != "" {
-			docContext = "【通用游戏常识】\n" + general
-		}
-		answer, usage, err := legacyComplete(s.chat, ctx, systemPrompt,
-			docContext, q+"\n\n（提示：知识库中未检索到相关内容；若问题与游戏相关请建议换个说法，若与游戏无关请按规则处理）")
-		if err != nil {
-			slog.Warn("civgo AI 调用失败（无命中场景）", "err", err, "ms", time.Since(start).Milliseconds())
-			s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
-			return
-		}
-		s.sendAnswer(m, answer, nil)
-		slog.Info("civgo 问答完成（无命中）", "group", m.GroupID, "user", m.UserID,
-			"q", truncateRunes(q, 50), "hits", 0,
-			"in_tok", usage.InputTokens, "out_tok", usage.OutputTokens,
-			"ms", time.Since(start).Milliseconds())
-		return
-	}
-
-	// 通用游戏常识（来自索引文档）+ 检索命中的相关片段
-	docContext := buildDocContext(hits, cfg.Retrieval.MaxContextChars)
-	if general := s.loadGeneralContext(cfg); general != "" {
-		docContext = "【通用游戏常识】\n" + general + "\n\n" + docContext
-	}
-	answer, usage, err := legacyComplete(s.chat, ctx, systemPrompt, docContext, q)
+	answer, usage, err := s.agent.Run(ctx, q)
 	if err != nil {
 		slog.Warn("civgo AI 调用失败", "err", err, "ms", time.Since(start).Milliseconds())
 		s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
 		return
 	}
-
-	s.sendAnswer(m, answer, hits)
+	s.sendAnswer(m, answer)
 	slog.Info("civgo 问答完成", "group", m.GroupID, "user", m.UserID,
-		"q", truncateRunes(q, 50), "hits", len(hits),
+		"q", truncateRunes(q, 50),
 		"in_tok", usage.InputTokens, "out_tok", usage.OutputTokens,
 		"ms", time.Since(start).Milliseconds())
 }
 
-// buildDocContext 把检索命中块拼成知识源文本（按分数降序，累计不超过上限）。
-func buildDocContext(hits []Hit, maxChars int) string {
-	var sb strings.Builder
-	total := 0
-	for _, h := range hits {
-		head := ""
-		if h.Chunk.Heading != "" {
-			head = " §" + h.Chunk.Heading
-		}
-		block := fmt.Sprintf("【来源: %s%s】\n%s\n\n", h.Chunk.File, head, h.Chunk.Text)
-		if total+runeLen(block) > maxChars {
-			break
-		}
-		sb.WriteString(block)
-		total += runeLen(block)
-	}
-	if sb.Len() == 0 && len(hits) > 0 {
-		// 单块就超限：取第一块截断
-		sb.WriteString(truncateRunes(hits[0].Chunk.Text, maxChars))
-	}
-	return sb.String()
-}
-
-// MaxSourceFiles 回复末尾话题提示的最大数量（不再展示文件列表，
-// 来源由 AI 按规则在文内标注，末尾改为可深入提问的话题关键词）。
-const MaxTopicHints = 3
-
-// maxGeneralContextChars 通用游戏常识（索引文档内容）注入上限。
-const maxGeneralContextChars = 3000
-
 // sendAnswer 组装回复并分条发送（单条 ≤ DefaultMaxReplyLen，最多 5 条）。
-func (s *Service) sendAnswer(m onebot.GroupMessage, answer string, hits []Hit) {
-	tail := ""
-	if topics := topicHints(hits); len(topics) > 0 {
-		tail = "\n\n💡 可以继续问：" + strings.Join(topics, "、")
-	}
-	// SendGroupMsgAt 内部自动加 [CQ:at,qq=<uid>] 前缀（仅首条 @，后续条纯文本）
-	parts := splitReply(answer, tail)
+// SendGroupMsgAt 内部自动加 [CQ:at,qq=<uid>] 前缀（仅首条 @，后续条纯文本）。
+func (s *Service) sendAnswer(m onebot.GroupMessage, answer string) {
+	parts := splitReply(answer, "")
 	for i, p := range parts {
-		text := p
-		if i == len(parts)-1 && tail != "" {
-			text = p + tail
-			if runeLen(text) > DefaultMaxReplyLen {
-				text = truncateRunes(p, DefaultMaxReplyLen-runeLen(tail)) + tail
-			}
-		}
 		var err error
 		if i == 0 {
-			err = s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, text)
+			err = s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, p)
 		} else {
-			err = s.mgr.SendGroupMsg(m.GroupID, text)
+			err = s.mgr.SendGroupMsg(m.GroupID, p)
 		}
 		if err != nil {
 			slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
 		}
 	}
-}
-
-// topicHints 从命中文档提取可深入提问的**游戏概念**话题：
-// 标题优先，清理序号前缀后仍不合规则（过短/文档性词汇）则回退文件名；
-// 去重、最多 MaxTopicHints 个。索引文件已不进检索，天然不会出现。
-func topicHints(hits []Hit) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, h := range hits {
-		t := cleanTopic(h.Chunk.Heading)
-		if !validTopic(t) {
-			t = cleanTopic(cleanTopicName(h.Chunk.File))
-		}
-		if !validTopic(t) || seen[t] {
-			continue
-		}
-		seen[t] = true
-		out = append(out, t)
-		if len(out) >= MaxTopicHints {
-			break
-		}
-	}
-	return out
-}
-
-// validTopic 判断话题是否值得展示：非空、至少 2 个字符、不含文档性词汇。
-func validTopic(t string) bool {
-	if runeLen(t) < 2 {
-		return false
-	}
-	lower := strings.ToLower(t)
-	if strings.Contains(lower, "索引") || strings.Contains(lower, "index") ||
-		strings.Contains(lower, "阅读顺序") || strings.Contains(lower, "规则归属") ||
-		strings.Contains(lower, "目录") {
-		return false
-	}
-	return true
-}
-
-// ordinalRe 匹配标题序号前缀：数字/中文数字 + 分隔符（如 "六、" "1. " "三）" "(2) "）。
-// 分隔符必选，避免误伤 "二战" "数值" 等含数字的正常词汇。
-var ordinalRe = regexp.MustCompile(`^[（(]?[0-9一二三四五六七八九十百千]+[、.．:：)）]+\s*`)
-
-// cleanTopic 清理话题文本：去序号前缀、去 markdown 残留。
-func cleanTopic(s string) string {
-	s = ordinalRe.ReplaceAllString(s, "")
-	// 去 markdown 残留与空白
-	return strings.Trim(strings.TrimSpace(s), "#*` \t")
-}
-
-// cleanTopicName 文件名转话题名：去扩展名、去数字序号前缀（如 "04_建筑系统.md" → "建筑系统"）。
-func cleanTopicName(file string) string {
-	base := filepath.Base(file)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	if i := strings.Index(base, "_"); i > 0 && isAllDigits(base[:i]) {
-		base = base[i+1:]
-	}
-	return strings.TrimSpace(base)
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// loadGeneralContext 读取索引类文档内容作为通用游戏常识（每次问答读取，
-// 文件很小且受限流保护；repo 未就绪时返回空串）。
-func (s *Service) loadGeneralContext(cfg *Config) string {
-	dir := filepath.Join(s.dataDir, "civgo", "repo", cfg.Repo.DocsPath)
-	files, err := scanDocs(dir)
-	if err != nil {
-		return ""
-	}
-	var sb strings.Builder
-	for _, f := range files {
-		if !isIndexFile(f) {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(dir, f))
-		if err != nil {
-			continue
-		}
-		sb.Write(content)
-		sb.WriteString("\n\n")
-	}
-	if sb.Len() == 0 {
-		return ""
-	}
-	return truncateRunes(sb.String(), maxGeneralContextChars)
 }
 
 // splitReply 把长回答切成 ≤ DefaultMaxReplyLen 的片段（优先按段落，最多 5 条）。
@@ -458,56 +267,6 @@ func (s *Service) reply(m onebot.GroupMessage, text string) {
 	if err := s.mgr.SendGroupMsgAt(m.GroupID, m.UserID, text); err != nil {
 		slog.Warn("civgo 回复发送失败", "group", m.GroupID, "err", err)
 	}
-}
-
-// embedRecoverLoop keyword 模式下周期性自检，成功回切 vector。
-func (s *Service) embedRecoverLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if s.index.Mode() != "keyword" {
-				continue
-			}
-			cfg := s.store.Get()
-			if cfg.Retrieval.Mode != "vector" {
-				continue // 用户配置就是 keyword，不折腾
-			}
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			err := s.embed.SelfCheck(cctx)
-			cancel()
-			if err == nil {
-				s.index.SetMode("vector")
-				slog.Info("civgo 嵌入自检恢复，回切 vector 检索（触发全量重建）")
-				// keyword 期间构建的索引没有向量，回切后必须全量重建
-				go func() {
-					cfg := s.store.Get()
-					docsDir := filepath.Join(s.dataDir, "civgo", "repo", cfg.Repo.DocsPath)
-					if _, rerr := s.index.RebuildAll(context.Background(), docsDir); rerr != nil {
-						slog.Warn("civgo 回切 vector 重建索引失败", "err", rerr)
-					}
-				}()
-			}
-		}
-	}
-}
-
-// legacyComplete 过渡期适配（cg0.1.2 ~ cg0.1.3）：旧调用方式（systemDoc + userText，无工具），
-// cg0.1.4 起由 agent.Run 取代后删除。
-func legacyComplete(chat ChatCompleter, ctx context.Context, instructions, systemDoc, userText string) (string, Usage, error) {
-	input := []InputItem{}
-	if systemDoc != "" {
-		input = append(input, InputItem{"role": "system", "content": systemDoc})
-	}
-	input = append(input, InputItem{"role": "user", "content": userText})
-	comp, err := chat.Complete(ctx, instructions, input, nil)
-	if err != nil {
-		return "", Usage{}, err
-	}
-	return comp.Text, comp.Usage, nil
 }
 
 // ---- 限流（令牌桶） ----
