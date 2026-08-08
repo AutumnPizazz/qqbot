@@ -59,6 +59,7 @@ type Service struct {
 	agent   *Agent        // AI 自主检索代理（工具循环）
 	history *HistoryStore // 群问答历史（AI 决策召回）
 	meter   *UsageMeter   // token 用量计量与预警
+	guard   *Guard        // 群聊安全防护（越狱/有害内容拦截）
 	syncer  *Syncer       // 文档同步器（Start 后非 nil，状态查询用）
 	chat    *ChatClient   // 对话客户端（管理后台 AI 自检用）
 	mgr     Manager
@@ -113,12 +114,14 @@ func New(opts Options) (*Service, error) {
 	te.SetHistory(history)
 	agent := NewAgent(chat, te, func() *Config { return store.Get() })
 	meter := NewUsageMeter(func() *Config { return store.Get() }, opts.SendMail, "")
+	guard := NewGuard(func() *Config { return store.Get() }, opts.SendMail, "")
 	return &Service{
 		store:   store,
 		docmap:  docmap,
 		agent:   agent,
 		history: history,
 		meter:   meter,
+		guard:   guard,
 		chat:    chat,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
@@ -241,6 +244,12 @@ func (s *Service) OnMessage(raw json.RawMessage) error {
 	// 限流（用户 + 群 双桶）
 	if !s.rl.Allow(m.GroupID, m.UserID, cfg.RateLimit.PerUserMin, cfg.RateLimit.PerGroupMin) {
 		s.reply(m, "⏳ 提问太频繁啦，稍等一会儿再试吧")
+		return nil
+	}
+
+	// 安全防护：越狱/有害内容拦截（零 AI 成本，命中即拒）
+	if msg := s.guard.Check(q); msg != "" {
+		s.reply(m, msg)
 		return nil
 	}
 

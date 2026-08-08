@@ -113,6 +113,7 @@ func testService(t *testing.T) (*Service, *fakeManager, *Store) {
 		agent:   agent,
 		history: history,
 		meter:   NewUsageMeter(func() *Config { return store.Get() }, nil, ""),
+		guard:   NewGuard(func() *Config { return store.Get() }, nil, ""),
 		mgr:     mgr,
 		rl:      newRateLimiter(),
 		sem:     make(chan struct{}, cfg.RateLimit.MaxConcurrentAI),

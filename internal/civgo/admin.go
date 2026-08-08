@@ -208,6 +208,9 @@ func mergeConfig(cur *Config, raw map[string]json.RawMessage) (*Config, error) {
 	if err := decode("usage_alert", &merged.UsageAlert); err != nil {
 		return nil, fmt.Errorf("config.usage_alert 无效: %w", err)
 	}
+	if err := decode("guard", &merged.Guard); err != nil {
+		return nil, fmt.Errorf("config.guard 无效: %w", err)
+	}
 	if err := decode("groups", &merged.Groups); err != nil {
 		return nil, fmt.Errorf("config.groups 无效: %w", err)
 	}

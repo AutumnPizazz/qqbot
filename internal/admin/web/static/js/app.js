@@ -1349,6 +1349,15 @@ async function viewCivgo() {
             ${num("usage_alert_cooldown_minutes", "冷却（分钟）", c.usage_alert?.cooldown_minutes ?? 30, 1, 1440)}
           </div>
           <label>提醒收件邮箱（留空 = 用系统邮箱收件人）<input type="text" name="usage_alert_email_to" value="${esc(c.usage_alert?.email_to || "")}" placeholder="admin@qq.com"></label>
+          <h3>安全防护（越狱/有害内容拦截）</h3>
+          <p class="muted" style="margin-bottom:6px">拦截「忽略之前的指令」「解除限制」等越狱诱导与违法犯罪内容提问，命中直接拒绝（不走 AI）。
+            拦截次数达到阈值后发邮件提醒。关键词表内置，命中会在日志中记录。</p>
+          ${ck("guard_enabled", "启用安全拦截", !!c.guard?.enabled)}
+          <label>拦截回复话术<input type="text" name="guard_reject_reply" value="${esc(c.guard?.reject_reply || "")}" placeholder="这个话题不太方便聊，换个游戏问题试试吧～"></label>
+          <div class="row">
+            ${num("guard_alert_threshold", "提醒阈值（10 分钟内拦截次数）", c.guard?.alert_threshold ?? 5, 0, 100)}
+            <label style="flex:2;min-width:200px">提醒邮箱（留空 = 不提醒）<input type="text" name="guard_alert_email" value="${esc(c.guard?.alert_email || "")}" placeholder="admin@qq.com"></label>
+          </div>
           <h3>启用群</h3>
           <label>群号（逗号分隔）<input type="text" name="groups" value="${esc((c.groups || []).join(", "))}" placeholder="123456, 789012"></label>
           <h3>限流</h3>
@@ -1425,6 +1434,12 @@ function collectCivgoConfig(form) {
       threshold_tokens: n("usage_alert_threshold_tokens", 500000),
       cooldown_minutes: n("usage_alert_cooldown_minutes", 30),
       email_to: fd.get("usage_alert_email_to"),
+    },
+    guard: {
+      enabled: fd.get("guard_enabled") === "on",
+      reject_reply: fd.get("guard_reject_reply"),
+      alert_threshold: n("guard_alert_threshold", 5),
+      alert_email: fd.get("guard_alert_email"),
     },
     groups: String(fd.get("groups") || "").split(/[,，\s]+/).map((s) => Number(s.trim())).filter((x) => Number.isFinite(x) && x > 0),
     rate_limit: {

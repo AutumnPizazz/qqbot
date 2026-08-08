@@ -61,6 +61,7 @@ type Config struct {
 	Agent      AgentConfig      `json:"agent"`
 	History    HistoryConfig    `json:"history"`
 	UsageAlert UsageAlertConfig `json:"usage_alert"`
+	Guard      GuardConfig      `json:"guard"`
 	Groups     []int64          `json:"groups"`
 	RateLimit  RateLimitConfig  `json:"rate_limit"`
 }
@@ -109,6 +110,14 @@ type UsageAlertConfig struct {
 	EmailTo         string `json:"email_to"`         // 收件人；空 = 回退 main 注入的默认收件人
 }
 
+// GuardConfig 群聊安全防护配置（越狱/有害内容拦截）。
+type GuardConfig struct {
+	Enabled        bool   `json:"enabled"`         // 默认 true
+	RejectReply    string `json:"reject_reply"`    // 拦截时的回复话术（空 = 默认话术）
+	AlertEmail     string `json:"alert_email"`     // 越狱提醒邮箱（空 = 不提醒）
+	AlertThreshold int    `json:"alert_threshold"` // 10 分钟窗口内拦截次数达到后提醒（0 = 不提醒）
+}
+
 // RateLimitConfig 问答限流配置。
 type RateLimitConfig struct {
 	PerUserMin      int `json:"per_user_min"`
@@ -152,6 +161,12 @@ func DefaultConfig() *Config {
 			WindowMinutes:   5,
 			ThresholdTokens: 500000,
 			CooldownMinutes: 30,
+		},
+		Guard: GuardConfig{
+			Enabled:        true,
+			RejectReply:    "这个话题不太方便聊，换个游戏问题试试吧～",
+			AlertEmail:     "",
+			AlertThreshold: 5,
 		},
 		Groups: []int64{},
 		RateLimit: RateLimitConfig{
@@ -262,6 +277,12 @@ func (c *Config) Validate() error {
 	}
 	if c.UsageAlert.CooldownMinutes < minCooldownMinutes || c.UsageAlert.CooldownMinutes > maxCooldownMinutes {
 		return fmt.Errorf("usage_alert.cooldown_minutes 必须在 %d~%d 之间", minCooldownMinutes, maxCooldownMinutes)
+	}
+	if c.Guard.AlertThreshold < 0 || c.Guard.AlertThreshold > 100 {
+		return fmt.Errorf("guard.alert_threshold 必须在 0~100 之间")
+	}
+	if runeLen(c.Guard.RejectReply) > 200 {
+		return errors.New("guard.reject_reply 不能超过 200 字")
 	}
 	if c.RateLimit.PerUserMin < 1 || c.RateLimit.PerGroupMin < 1 || c.RateLimit.MaxConcurrentAI < 1 {
 		return errors.New("rate_limit 各项必须 ≥ 1")
