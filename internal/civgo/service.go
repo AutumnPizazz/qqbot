@@ -46,7 +46,7 @@ type Options struct {
 
 // ChatCompleter 对话接口（ChatClient 实现；测试注入 fake）。
 type ChatCompleter interface {
-	Complete(ctx context.Context, instructions, systemDoc, userText string) (string, Usage, error)
+	Complete(ctx context.Context, instructions string, input []InputItem, tools []Tool) (Completion, error)
 }
 
 // Service civgo 社区服务聚合：独立 message handler（与规则引擎并行）、
@@ -82,8 +82,22 @@ func New(opts Options) (*Service, error) {
 	index := NewIndexer(embed, filepath.Join(opts.DataDir, "civgo", "index.json"), cfg.Retrieval)
 	index.Load()
 
-	// 嵌入端点自检：失败降级 keyword（不阻断启动）
+	chat := NewChatClient(cfg.AI)
+	// function calling 自检：网关明确不支持（4xx）→ 模块禁用并明确报告；
+	// 网络抖动/5xx → 告警后继续启动（agent 循环中工具失败自然降级直答）。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ok, cerr := chat.SelfCheckTools(ctx)
+	cancel()
+	if cerr != nil {
+		if ok {
+			slog.Warn("civgo function calling 自检暂不确定（继续启动）", "err", cerr)
+		} else {
+			return nil, fmt.Errorf("civgo 网关不支持 function calling，问答模块禁用（可更换支持 tools 的网关）: %w", cerr)
+		}
+	}
+
+	// 嵌入端点自检：失败降级 keyword（不阻断启动）
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	if err := embed.SelfCheck(ctx); err != nil {
 		slog.Warn("civgo 嵌入自检失败，降级 keyword 检索", "err", err)
 		index.SetMode("keyword")
@@ -93,7 +107,7 @@ func New(opts Options) (*Service, error) {
 	return &Service{
 		store:   store,
 		index:   index,
-		chat:    NewChatClient(cfg.AI),
+		chat:    chat,
 		embed:   embed,
 		mgr:     opts.Manager,
 		rl:      newRateLimiter(),
@@ -215,7 +229,7 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 		if general := s.loadGeneralContext(cfg); general != "" {
 			docContext = "【通用游戏常识】\n" + general
 		}
-		answer, usage, err := s.chat.Complete(ctx, systemPrompt,
+		answer, usage, err := legacyComplete(s.chat, ctx, systemPrompt,
 			docContext, q+"\n\n（提示：知识库中未检索到相关内容；若问题与游戏相关请建议换个说法，若与游戏无关请按规则处理）")
 		if err != nil {
 			slog.Warn("civgo AI 调用失败（无命中场景）", "err", err, "ms", time.Since(start).Milliseconds())
@@ -235,7 +249,7 @@ func (s *Service) handleQuestion(m onebot.GroupMessage, q string) {
 	if general := s.loadGeneralContext(cfg); general != "" {
 		docContext = "【通用游戏常识】\n" + general + "\n\n" + docContext
 	}
-	answer, usage, err := s.chat.Complete(ctx, systemPrompt, docContext, q)
+	answer, usage, err := legacyComplete(s.chat, ctx, systemPrompt, docContext, q)
 	if err != nil {
 		slog.Warn("civgo AI 调用失败", "err", err, "ms", time.Since(start).Milliseconds())
 		s.reply(m, "🤖 AI 服务暂时不可用（已记录），请稍后再试")
@@ -476,6 +490,21 @@ func (s *Service) embedRecoverLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// legacyComplete 过渡期适配（cg0.1.2 ~ cg0.1.3）：旧调用方式（systemDoc + userText，无工具），
+// cg0.1.4 起由 agent.Run 取代后删除。
+func legacyComplete(chat ChatCompleter, ctx context.Context, instructions, systemDoc, userText string) (string, Usage, error) {
+	input := []InputItem{}
+	if systemDoc != "" {
+		input = append(input, InputItem{"role": "system", "content": systemDoc})
+	}
+	input = append(input, InputItem{"role": "user", "content": userText})
+	comp, err := chat.Complete(ctx, instructions, input, nil)
+	if err != nil {
+		return "", Usage{}, err
+	}
+	return comp.Text, comp.Usage, nil
 }
 
 // ---- 限流（令牌桶） ----

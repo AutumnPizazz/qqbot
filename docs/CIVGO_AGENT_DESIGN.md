@@ -211,6 +211,17 @@ POST {base_url}/responses
 
 > 验证结论需记入提交说明与日志；若为「不支持」，停下向用户报告，按用户决定更换网关或调整方案（**不得**擅自改做 plan 模式）。
 
+### 6.3 验证结论（cg0.1.2 记录）
+
+- **本地协议验证**：`SelfCheckTools` 与工具协议已实现并通过 httptest 模拟网关测试
+  （chat_test.go：请求体 tools/tool_choice 构造、function_call 解析、call_id/id 兼容、
+  4xx 判定不支持 / 5xx 判定不确定）；
+- **真实网关验证**：本地无 api_key，待部署环境（data/civgo/civgo.json 配置后）启动自检自动执行：
+  日志出现 `civgo function calling 自检通过` = 支持；
+  `网关不支持 function calling`（4xx）= 不支持，模块禁用并需换网关；
+  `自检暂不确定`（网络抖动）= 告警继续，agent 循环内工具失败自然降级直答；
+- 用户提供 api_key 后可随时在本地跑 `go test -run TestSelfCheckToolsReal -v`（预留，实现时若需要再补）验证。
+
 ## 7. 文档地图模块（docmap.go）
 
 ### 7.1 动机

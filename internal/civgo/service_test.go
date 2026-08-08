@@ -124,11 +124,11 @@ type fixedChat struct {
 	err    error
 }
 
-func (f *fixedChat) Complete(ctx context.Context, instructions, systemDoc, userText string) (string, Usage, error) {
+func (f *fixedChat) Complete(ctx context.Context, instructions string, input []InputItem, tools []Tool) (Completion, error) {
 	if f.err != nil {
-		return "", Usage{}, f.err
+		return Completion{}, f.err
 	}
-	return f.answer, Usage{InputTokens: 1, OutputTokens: 1}, nil
+	return Completion{Text: f.answer, Usage: Usage{InputTokens: 1, OutputTokens: 1}}, nil
 }
 
 // 等待异步问答完成（OnMessage 起 goroutine）。
