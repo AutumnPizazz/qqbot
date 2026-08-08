@@ -4,7 +4,8 @@
 // 设计目标：
 //   - 邮件通道复用管理后台的 SMTP 配置（授权码加密存储于 control.json，不进入代码/环境变量）；
 //   - 检测复用 napcat.Client 的 CheckLogin（不额外探测端口）；
-//   - 纯内存状态，进程重启后若仍掉线会重新提醒一次（可接受，防漏报）。
+//   - 启动宽限期：进程重启瞬间 NapCat 可能尚未就绪或 QQ 正在自动登录，
+//     宽限期内只观察不发提醒，确认在线或超时后才进入正常监控，避免重启误报。
 package watchdog
 
 import (
@@ -17,11 +18,20 @@ import (
 // DefaultInterval 默认检测间隔。
 const DefaultInterval = 10 * time.Minute
 
+// DefaultStartupGrace 默认启动宽限期：进程重启后 NapCat 拉起 + QQ 自动登录
+// 通常需数十秒到几分钟，宽限期内未确认在线才视为真掉线（防漏报）。
+const DefaultStartupGrace = 10 * time.Minute
+
+// gracePollInterval 宽限期内的轮询间隔：远短于正常检测间隔，
+// NapCat 一旦就绪即尽快确认在线、提前结束宽限期。
+const gracePollInterval = 30 * time.Second
+
 // Options 监控配置。
 type Options struct {
-	Interval time.Duration // 检测间隔；<=0 时使用 DefaultInterval
-	To       string        // 提醒收件邮箱（必填，来自系统邮箱配置）
-	Logger   *slog.Logger  // nil 时使用 slog.Default()
+	Interval     time.Duration // 检测间隔；<=0 时使用 DefaultInterval
+	StartupGrace time.Duration // 启动宽限期；<=0 时使用 DefaultStartupGrace
+	To           string        // 提醒收件邮箱（必填，来自系统邮箱配置）
+	Logger       *slog.Logger  // nil 时使用 slog.Default()
 }
 
 // monitor 是去重状态机（独立于循环，便于单元测试）。
@@ -69,8 +79,42 @@ func (m *monitor) tick(ctx context.Context, to string,
 	return false
 }
 
-// Watch 阻塞运行监控循环：启动时立即检测一次，之后按 Interval 周期检测；
-// ctx 取消时退出。
+// waitGrace 执行启动宽限期：以 poll 间隔轮询 check，
+// 一旦确认在线立即返回（不发提醒）；宽限期耗尽仍未在线时调用一次 tick
+// （视为真掉线，发出首封提醒）。ctx 取消立即返回。
+func waitGrace(ctx context.Context, logger *slog.Logger, m *monitor, to string,
+	check func(context.Context) (bool, error),
+	send func(to, subject, body string) error, grace, poll time.Duration) {
+
+	gctx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	for {
+		online, err := check(gctx)
+		if err == nil && online {
+			logger.Info("NapCat 启动宽限期内确认在线，进入正常监控")
+			return
+		}
+		select {
+		case <-gctx.Done():
+			if ctx.Err() != nil {
+				return // 进程退出中（父 ctx 已取消），不再发信
+			}
+			logger.Warn("NapCat 启动宽限期结束仍未在线，按掉线处理", "err", err)
+			m.tick(ctx, to, check, send) // 首次掉线提醒（内部去重，仅一封）
+			return
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// Watch 阻塞运行监控循环：启动后先进入启动宽限期——进程重启瞬间 NapCat
+// 可能尚未就绪或 QQ 正在自动登录，宽限期内只观察不发提醒，避免重启误报；
+// 确认在线（提前结束宽限期）或宽限期超时（按真掉线提醒）后，按 Interval
+// 周期检测；ctx 取消时退出。
 func Watch(ctx context.Context, check func(context.Context) (bool, error),
 	send func(to, subject, body string) error, opts Options) {
 
@@ -82,13 +126,17 @@ func Watch(ctx context.Context, check func(context.Context) (bool, error),
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
+	grace := opts.StartupGrace
+	if grace <= 0 {
+		grace = DefaultStartupGrace
+	}
 	if opts.To == "" {
 		logger.Warn("watchdog: 收件邮箱为空，NapCat 掉线监控不会运行")
 		return
 	}
 
 	m := newMonitor(logger)
-	m.tick(ctx, opts.To, check, send)
+	waitGrace(ctx, logger, m, opts.To, check, send, grace, gracePollInterval)
 
 	t := time.NewTicker(interval)
 	defer t.Stop()
