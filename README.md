@@ -98,6 +98,7 @@ pwsh ./deploy.ps1           # 同上（Windows 原生，PowerShell 7+；需 Dock
 | [`docs/WEB_ADMIN_DESIGN.md`](docs/WEB_ADMIN_DESIGN.md) | 网页后台设计基线、鉴权、API、验收记录 |
 | [`docs/RULE_ENGINE_DESIGN.md`](docs/RULE_ENGINE_DESIGN.md) | 规则引擎设计（条件/动作清单、迁移映射、组合模式） |
 | [`docs/NOTIFY.md`](docs/NOTIFY.md) | QQ 消息传信工具（AI agent 进度通报：`qqbot notify send`） |
+| [`docs/NOTIFY-QUICKSTART.md`](docs/NOTIFY-QUICKSTART.md) | notify 速查（文件/配置/用法/退出码） |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | 云服务器公网部署、迁移清单、Caddy/安全组 |
 
 ## 开发
