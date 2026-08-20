@@ -31,6 +31,8 @@ func runCLI(args []string) bool {
 		os.Exit(runSecretsCmd(args[1:]))
 	case "config":
 		os.Exit(runConfigCmd(args[1:]))
+	case "notify":
+		os.Exit(runNotifyCmd(args[1:]))
 	case "help", "-h", "--help":
 		printCLIUsage()
 		os.Exit(0)
@@ -50,6 +52,9 @@ func printCLIUsage() {
 
   qqbot config validate --data-dir <dir> --master-key-file <f>
       校验 control.json 完整性与当前主密钥匹配情况。
+
+  qqbot notify send --server <url> --token <t> --to <qq> "消息"
+      通过 QQ 消息向管理员传信（AI agent 进度通报；见 cmd_notify.go / docs/NOTIFY.md）。
 
 环境变量：QQBOT_ADMIN_LISTEN / QQBOT_DATA_DIR / QQBOT_MASTER_KEY_FILE / QQBOT_IMPORT_CONFIG
 `)

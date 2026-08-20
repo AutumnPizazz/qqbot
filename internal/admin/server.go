@@ -171,6 +171,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/session", s.handleSession)
 
+	// 机器对机器通知端点（独立 Bearer token，无需浏览器 session）
+	mux.HandleFunc("POST /api/v1/notify", s.handleNotify)
+
 	// 业务 API（需要登录 + CSRF + 初始化门控）
 	api := s.apiRoutes()
 	mux.Handle("/api/v1/", s.withSession(s.gateSetup(s.withCSRF(api))))
