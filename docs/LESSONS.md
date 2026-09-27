@@ -86,6 +86,10 @@ wsmonitor 能收到而 qqbot 收不到 → 查 qqbot 二进制版本（第 2 条
 - 公共镜像加速器大多失效（2026 实测仅少量可用且不稳定）
 - **最可靠：用户自己的 HTTP 代理**，配进 Docker Desktop（DEPLOYMENT.md 第 1 步）
 - 测速技巧：`curl -x http://127.0.0.1:7897 -o /dev/null -w '%{speed_download}' <大文件URL>`
+- **代理没开时仍可构建**（2026-09-11 实测）：把 Docker Desktop 代理切到「系统代理」
+  （系统代理关闭 = 直连），再给构建加 `ENV GOPROXY=https://goproxy.cn,direct`——
+  `docker.m.daocloud.io` 镜像源与 aliyun apt 源均可直连，只有 `proxy.golang.org` 必须换源，
+  否则 `RUN go mod download` 报 `dial tcp 142.250.x.x:443: connect: connection refused`。
 
 ### 12. git-bash 的 MSYS 路径转换
 - `docker run ... /app/qqbot` 会被转成 `C:/Program Files/Git/app/qqbot`
@@ -106,6 +110,30 @@ wsmonitor 能收到而 qqbot 收不到 → 查 qqbot 二进制版本（第 2 条
 - 指令解析重构为**指令树**（`internal/bot/tree.go`）：每个节点自带帮助文本，解析器走到任意节点遇到 `?` 即返回该节点帮助——结构上不可能漏
 - 规则：行为要"全局成立"时，先问自己"这个行为能不能由数据/结构推导出来"，能则重构，不要继续打补丁
 - 配套：穷举测试（如 `TestQuestionAnywhere` 12 种位置）只能防回归，不能替代结构保证
+
+### 16. ⛔ NapCat 的两个“僵死态”：QQ Is Logined 与 HTTP 200 + code:-1
+**事故**（2026-09-11）：07:42 QQ 掉线后，管理后台不再显示登录二维码；
+重启 napcat 后页面又持续报 `CheckLoginStatus 返回异常: code=-1`。两个独立问题：
+
+1. **僵死态**：账号已离线，但 NapCat 内核仍认为已登录 → `GetQQLoginQrcode` / `RefreshQRcode`
+   均返回 `{"code":-1,"message":"QQ Is Logined"}`，后台拿不到二维码（`/api/v1/napcat/qrcode.png` 回 502）。
+   `CheckLoginStatus` 会给出线索：`isOffline:true` + 过期 `qrcodeurl` + `loginError:"二维码已过期，请刷新"`。
+   **只能靠重启 napcat 清写僵死态**（账号本来已离线，重启不会额外丢登录态）。
+2. **凭据绑定进程**：NapCat 重启后旧 credential 立即失效，而它用 **HTTP 200 + `{"code":-1,"message":"Unauthorized"}`**
+   表达鉴权失败（不是 401）。客户端原来只在 401 时重认证 → 一旦 NapCat 重启就报 `code=-1`，
+   直到 50 分钟缓存 TTL 到期才自愈。已在 `internal/napcat/client.go` 用 `isAuthFailure` 统一映射为 401
+   （回归测试 `TestReauthWhenCredentialInvalidatedByNapCatRestart`）。
+
+**规则**：
+- 调 NapCat WebUI API 不能只看 HTTP 状态码，**必须看 `code` 字段**（成功为 0）；
+- 地址直探技巧（不需要浏览器）：
+  ```bash
+  HASH=$(printf '%s.napcat' "$NAPCAT_WEBUI_SECRET_KEY" | sha256sum | cut -d' ' -f1)
+  CRED=$(curl -s -X POST http://127.0.0.1:6099/api/auth/login -H 'Content-Type: application/json' \
+        -d "{\"hash\":\"$HASH\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["Credential"])')
+  curl -s -X POST http://127.0.0.1:6099/api/QQLogin/CheckLoginStatus -H "Authorization: Bearer $CRED"
+  ```
+- 应急恢复：`docker restart qqbot`（清掉进程内存里的失效 credential，配置/会话不受影响）。
 
 ## 部署后检查清单（Checklist）
 

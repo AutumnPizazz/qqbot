@@ -3,7 +3,8 @@
 //
 // 安全约束（设计文档 11 节）：
 //   - credential 使用互斥 + singleflight 防止并发重复刷新；
-//   - 401 时只重新认证一次；typed HTTP error 携带状态码，不靠字符串判断；
+//   - 401（含 NapCat 的「200 + code:-1 Unauthorized」）时只重新认证一次；
+//     业务成功与否看 code 字段，HTTP 层错误用 typed HTTP error 携带状态码；
 //   - 状态查询短时缓存，避免页面轮询击穿 NapCat；
 //   - 二维码由后端生成 PNG，NapCat token 不进入浏览器；
 //   - 二维码内容、credential、URL 参数不得进入审计或普通日志。
@@ -208,6 +209,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if resp.StatusCode != http.StatusOK {
 		return &HTTPError{StatusCode: resp.StatusCode, Path: path, Body: truncate(string(data), 200)}
 	}
+	// NapCat 鉴权失败时不返回 401，而是 200 + {"code":-1,"message":"Unauthorized"}。
+	// 这里统一映射为 401，交由 call 重新认证后重试一次；否则客户端会一直沿用
+	// 失效凭据（页面报 “CheckLoginStatus 返回异常: code=-1”）直到缓存 TTL 到期。
+	if isAuthFailure(data) {
+		return &HTTPError{StatusCode: http.StatusUnauthorized, Path: path, Body: truncate(string(data), 200)}
+	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
 			return fmt.Errorf("%s 响应解析失败: %w", path, err)
@@ -308,6 +315,24 @@ func decodeDataURL(raw string) ([]byte, string, error) {
 	}
 	mime := strings.SplitN(meta, ";", 2)[0]
 	return data, mime, nil
+}
+
+// isAuthFailure 判断 NapCat 是否以「HTTP 200 + code:-1 Unauthorized」的形式拒绝鉴权。
+//
+// NapCat WebUI 的 credential 绑定进程生命周期：NapCat 重启后旧 credential 立即失效
+// （实测重启前后同一 credential：重启后返回 code=-1 Unauthorized）。
+func isAuthFailure(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var body struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil || body.Code != -1 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(body.Message), "unauthorized")
 }
 
 func truncate(s string, n int) string {

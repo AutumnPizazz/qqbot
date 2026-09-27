@@ -24,6 +24,7 @@ type mockNapcat struct {
 	isLogin  bool
 	qrURL    string
 	loginErr string
+	cred     string       // 服务端当前有效 credential（清空即模拟 NapCat 重启后凭据失效）
 	loginCnt atomic.Int64 // /api/auth/login 调用次数
 	checkCnt atomic.Int64
 }
@@ -50,11 +51,18 @@ func (m *mockNapcat) handler() http.Handler {
 			return
 		}
 		cred := base64.StdEncoding.EncodeToString([]byte(`{"Data":{"CreatedTime":1,"HashEncoded":"` + body.Hash + `"},"Hmac":"x"}`))
+		m.mu.Lock()
+		m.cred = cred // 服务端当前有效凭据（绑定 NapCat 进程生命周期）
+		m.mu.Unlock()
 		write(w, 0, "success", map[string]string{"Credential": cred})
 	})
 	mux.HandleFunc("/api/QQLogin/CheckLoginStatus", func(w http.ResponseWriter, r *http.Request) {
 		m.checkCnt.Add(1)
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		m.mu.Lock()
+		validCred := m.cred != "" && r.Header.Get("Authorization") == "Bearer "+m.cred
+		m.mu.Unlock()
+		if !validCred {
+			// 与 NapCat 真实行为一致：HTTP 200 + code:-1 Unauthorized
 			write(w, -1, "Unauthorized", nil)
 			return
 		}
@@ -185,6 +193,43 @@ func TestStatusCacheHits(t *testing.T) {
 	}
 	if m.checkCnt.Load() <= cnt1 {
 		t.Fatal("缓存过期后应重新请求")
+	}
+}
+
+func TestReauthWhenCredentialInvalidatedByNapCatRestart(t *testing.T) {
+	// NapCat 重启后旧 credential 立即失效，且它用「HTTP 200 + code:-1 Unauthorized」表达，
+	// 客户端必须识别并自动重新登录一次后重试成功（否则页面一直报 “code=-1”）。
+	m, c := startMock(t)
+	ctx := context.Background()
+	if _, err := c.CheckLogin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	loginsBefore := m.loginCnt.Load()
+
+	// 模拟 NapCat 重启：服务端凭据作废，而客户端仍缓存着旧凭据
+	m.mu.Lock()
+	m.cred = ""
+	m.mu.Unlock()
+	time.Sleep(statusCacheTTL + 50*time.Millisecond) // 越过状态缓存
+
+	st, err := c.CheckLogin(ctx)
+	if err != nil {
+		t.Fatalf("凭据失效后应自动重认证: %v", err)
+	}
+	if st == nil || st.IsLogin {
+		t.Fatalf("状态异常: %+v", st)
+	}
+	if m.loginCnt.Load() != loginsBefore+1 {
+		t.Fatalf("应恰好重新登录一次（%d -> %d）", loginsBefore, m.loginCnt.Load())
+	}
+
+	// 新凭据生效后不应再次登录
+	time.Sleep(statusCacheTTL + 50*time.Millisecond)
+	if _, err := c.CheckLogin(ctx); err != nil {
+		t.Fatalf("重新认证后调用应正常: %v", err)
+	}
+	if m.loginCnt.Load() != loginsBefore+1 {
+		t.Fatalf("不应重复登录（%d）", m.loginCnt.Load())
 	}
 }
 
