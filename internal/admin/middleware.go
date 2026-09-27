@@ -27,6 +27,11 @@ func sessionFromCtx(r *http.Request) *session {
 // withSession 校验登录态：Cookie 中的 opaque session ID → 内存 session。
 // 未登录/过期 → 401。通过后注入 session 到 context。
 func (s *Server) withSession(next http.Handler) http.Handler {
+	if s.disableAuth {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, withSessionCtx(r, s.implicitSession))
+		})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {

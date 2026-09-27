@@ -191,6 +191,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // handleSession 返回当前会话状态与 CSRF token（前端仅内存持有，不落 localStorage）。
 // GET /api/v1/auth/session
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if s.disableAuth {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated":  true,
+			"setup_required": false,
+			"csrf_token":     s.implicitSession.CSRF,
+			"created_at":     s.implicitSession.CreatedAt,
+			"expires_at":     s.implicitSession.ExpiresAt,
+		})
+		return
+	}
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{

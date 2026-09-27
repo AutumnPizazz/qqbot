@@ -40,6 +40,7 @@ type Options struct {
 	Counters       func(groupID int64) map[string]map[int64]int // 规则计数器状态（可 nil）
 	EmailSender    mailer.Sender                                // 邮箱验证码发送器（nil=按生效配置构建；测试注入）
 	SecureCookies  bool                                         // Cookie Secure 标志（默认 HTTPS/反代场景 true）
+	DisableAuth    bool                                         // 关闭管理员登录验证（仅供本机/内网/SSH 隧道访问）
 	TrustedProxies []string                                     // 可信反向代理 IP（仅这些来源允许提供 X-Forwarded-For）
 	Civgo          CivgoAdmin                                   // civgo 配置管理（nil = 未接入，前端隐藏对应区块）
 }
@@ -54,6 +55,9 @@ type Server struct {
 	loginRL  *rateLimiter
 	started  time.Time
 	idem     *idemStore
+
+	disableAuth     bool
+	implicitSession *session
 
 	compsMu        sync.RWMutex
 	mgr            *onebot.Manager
@@ -126,6 +130,7 @@ func New(opts Options) (*Server, error) {
 	}
 	s := &Server{
 		opts:           opts,
+		disableAuth:    opts.DisableAuth,
 		auth:           auth,
 		sessions:       newSessionStore(),
 		loginRL:        newRateLimiter(15*time.Minute, 10, 100),
@@ -140,6 +145,9 @@ func New(opts Options) (*Server, error) {
 		mfa:            newMFAStore(),
 		mailOverride:   opts.EmailSender,
 	}
+	if opts.DisableAuth {
+		s.implicitSession = s.sessions.create()
+	}
 	// 配置变更时：NapCat 客户端重建（token/URL 可能变化）
 	opts.Service.Subscribe(func() {
 		s.napMu.Lock()
@@ -150,7 +158,12 @@ func New(opts Options) (*Server, error) {
 }
 
 // SetupRequired 判断是否处于待初始化状态（未设置管理员密码）。
-func (s *Server) SetupRequired() bool { return s.auth.SetupRequired() }
+func (s *Server) SetupRequired() bool {
+	if s.disableAuth {
+		return false
+	}
+	return s.auth.SetupRequired()
+}
 
 // EnsureSetupToken 生成并返回一次性 setup token（明文只输出到日志一次）。
 // 已存在未消费 token 时返回错误（重启不会重新生成）。

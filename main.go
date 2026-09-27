@@ -103,6 +103,9 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 	// civgo 配置管理适配（admin 后台读写 civgo.json）；Service 启动后由 startComponents 注入
 	civgoAdmin := civgo.NewAdmin(dataDir, nil)
 
+	if os.Getenv("QQBOT_ADMIN_DISABLE_AUTH") == "1" {
+		slog.Warn("QQBOT_ADMIN_DISABLE_AUTH=1：管理后台登录验证已禁用，仅限本机/内网/SSH 隧道访问")
+	}
 	adminSrv, err := admin.New(admin.Options{
 		DataDir:        dataDir,
 		Service:        svc,
@@ -112,6 +115,7 @@ func runManaged(dataDir, masterKeyFile, adminListen string) {
 		QueryAudit:     queryAuditOf(b),
 		RecentMessages: recentMessagesOf(b),
 		SecureCookies:  secureCookies(),
+		DisableAuth:    os.Getenv("QQBOT_ADMIN_DISABLE_AUTH") == "1",
 		TrustedProxies: trustedProxies(),
 		Civgo:          civgoAdmin,
 	})
